@@ -23,6 +23,7 @@ import torch.distributed as dist
 import os
 #token = os.getenv("HF_TOKEN")
 #login(token=token)
+login(token="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")
 
 class ExpertNetwork(nn.Module):
     """Individual expert network for MoE"""
