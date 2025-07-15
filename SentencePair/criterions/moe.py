@@ -50,6 +50,7 @@ class MOE(CrossEntropyLossMoE):
         kd_loss, log = self.compute_moe_loss(
             outputs, teacher_outputs, output_data, distiller, log
         )
+        print('moe_loss:', kd_loss)
       
         loss = (1.0 - self.kd_rate) * loss + self.kd_rate * kd_loss
         log["loss"] = loss.detach().clone()  # Store as tensor for distributed logging
