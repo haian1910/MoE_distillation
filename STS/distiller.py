@@ -16,6 +16,7 @@ from peft import (
 )
 from STS.utils import log_rank
 from huggingface_hub import login
+login(token="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")
 
 import os
 #token = os.getenv("HF_TOKEN")
