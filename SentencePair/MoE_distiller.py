@@ -21,8 +21,7 @@ from utils import log_rank
 from huggingface_hub import login
 import torch.distributed as dist
 import os
-token = os.getenv("HF_TOKEN")
-login(token=token)
+
 
 class ExpertNetwork(nn.Module):
     """Individual expert network for MoE"""
