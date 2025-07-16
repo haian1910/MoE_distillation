@@ -43,14 +43,13 @@ class MOE(CrossEntropyLossMoE):
             teacher_outputs = teacher_model(
                 input_data["teacher_input_ids"],
                 attention_mask=input_data["teacher_attention_mask"],
-                output_hidden_states=True
+                output_hidden_states=True,  # This is crucial for getting hidden states
+                return_dict=True  # Ensure we get a structured output
             )
-        
         # Compute distillation loss
         kd_loss, log = self.compute_moe_loss(
             outputs, teacher_outputs, output_data, distiller, log
         )
-        print('moe_loss:', kd_loss)
       
         loss = (1.0 - self.kd_rate) * loss + self.kd_rate * kd_loss
         log["loss"] = loss.detach().clone()  # Store as tensor for distributed logging
@@ -68,8 +67,8 @@ class MOE(CrossEntropyLossMoE):
         return loss, logging_output
 
     def compute_moe_loss(
-        self, outputs, teacher_outputs, output_data, distiller, log
-    ):
+    self, outputs, teacher_outputs, output_data, distiller, log
+):
         """
         Compute the Mixture of Experts (MoE) distillation loss for three experts.
         - Expert 1: Cosine Loss
@@ -87,14 +86,25 @@ class MOE(CrossEntropyLossMoE):
         # Extract student CLS representation (before MoE)
         student_cls = outputs['cls_representation']  # [batch_size, 768]
         
-        # Extract teacher hidden states
-        teacher_hidden = teacher_outputs['hidden_states'][-1] if 'hidden_states' in teacher_outputs else teacher_outputs
-        if teacher_hidden.dim() == 3:  # [batch_size, sequence_length, hidden_size]
-            teacher_cls = teacher_hidden[:, 0, :]  # Take [CLS] token
-        elif teacher_hidden.dim() == 2:  # [batch_size, hidden_size]
-            teacher_cls = teacher_hidden  # Already CLS representation
+        # Extract teacher hidden states - Handle different model architectures
+        if hasattr(teacher_outputs, 'hidden_states') and teacher_outputs.hidden_states is not None:
+            # For LLM2Vec model loaded with AutoModelForSequenceClassification
+            teacher_hidden = teacher_outputs.hidden_states[-1]  # Last layer hidden states
+        elif isinstance(teacher_outputs, dict) and 'hidden_states' in teacher_outputs:
+            # If teacher_outputs is a dict with hidden_states key
+            teacher_hidden = teacher_outputs['hidden_states'][-1]
         else:
-            raise ValueError("Unexpected dimension for teacher_hidden")
+            # Fallback: try to get from logits output if available
+            # This case might need adjustment based on your teacher model output structure
+            raise ValueError(f"Cannot extract hidden states from teacher_outputs of type {type(teacher_outputs)}")
+        
+        # Extract CLS token representation from teacher
+        if teacher_hidden.dim() == 3:  # [batch_size, sequence_length, hidden_size]
+            teacher_cls = teacher_hidden[:, 0, :]  # Take [CLS] token (first token)
+        elif teacher_hidden.dim() == 2:  # [batch_size, hidden_size] - already CLS representation
+            teacher_cls = teacher_hidden
+        else:
+            raise ValueError(f"Unexpected dimension for teacher_hidden: {teacher_hidden.shape}")
 
         # Project teacher representation to match student dimension using MoE projections
         # Each expert output should be [batch_size, teacher_hidden_size] to match teacher
