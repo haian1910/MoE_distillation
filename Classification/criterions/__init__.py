@@ -5,12 +5,13 @@ from .dual_space_kd_with_cross_model_attention import DualSpaceKDWithCMA
 from .universal_logit_distillation import UniversalLogitDistillation
 from .min_edit_dis_kld import MinEditDisForwardKLD
 from .rmse_cka import RMSE_CKA
-from .ot_rmse_cka import OT_RMSE_CKA
 from .ot_pro import OT_PRO
 from .ot_pro_rmse_cka import OT_PRO_RMSE_CKA
 from .multi_level_ot import MULTI_LEVEL_OT
 from .rank_cka import RANK_CKA
 from .min_cka import MIN_CKA
+from .cross_entropy_loss_moe import CrossEntropyLossMoE
+from .moe import MOE
 
 criterion_list = {
     "cross_entropy": CrossEntropyLoss,
@@ -21,12 +22,13 @@ criterion_list = {
     "min_edit_dis_kld": MinEditDisForwardKLD,
     "rmse_cka": RMSE_CKA,
     "min_edit_dis_kld": MinEditDisForwardKLD,
-    "ot_rmse_cka": OT_RMSE_CKA,
     "ot_pro": OT_PRO,
     "ot_pro_rmse_cka": OT_PRO_RMSE_CKA,
     "multi_level_ot": MULTI_LEVEL_OT,
     "rank_cka": RANK_CKA,
-    "min_cka": MIN_CKA
+    "min_cka": MIN_CKA,
+    "moe": MOE,
+    "ross_entropy_loss_moe": CrossEntropyLossMoE
 }
 
 def build_criterion(args):
