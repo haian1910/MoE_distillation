@@ -13,20 +13,29 @@ class CKALoss(nn.Module):
         self.eps = eps
     
     def forward(self, SH, TH): 
+        
         dT = TH.size(-1)
         dS = SH.size(-1)
         SH = SH.view(-1, dS).to(SH.device, torch.float64)
         TH = TH.view(-1, dT).to(SH.device, torch.float64)
+        print(SH)
+        print(TH)
         
         slen = SH.size(0)
         # Dropout on Hidden State Matching
+        SH = F.normalize(SH, p=2, dim=1)
+        TH = F.normalize(TH, p=2, dim=1)
         SH = SH - SH.mean(0, keepdim=True)
         TH = TH - TH.mean(0, keepdim=True)
-        
+        print('SH after centering:', SH)
+        print('TH after centering:', TH)
+
         num = torch.norm(SH.t().matmul(TH), 'fro')
         den1 = torch.norm(SH.t().matmul(SH), 'fro') + self.eps
         den2 = torch.norm(TH.t().matmul(TH), 'fro') + self.eps
-        
+        print('num:', num)
+        print('den1:', den1)
+        print('den2:', den2)
         return 1 - num/torch.sqrt(den1*den2)
 
 class MOE(CrossEntropyLossMoE):
@@ -137,23 +146,19 @@ class MOE(CrossEntropyLossMoE):
         elif isinstance(teacher_outputs, dict) and 'hidden_states' in teacher_outputs:
             # If teacher_outputs is a dict with hidden_states key
             teacher_hidden = teacher_outputs['hidden_states'][-1]
-        else:
-            # Fallback: try to get from logits output if available
-            # This case might need adjustment based on your teacher model output structure
-            raise ValueError(f"Cannot extract hidden states from teacher_outputs of type {type(teacher_outputs)}")
         
         # Extract CLS token representation from teacher
         if teacher_hidden.dim() == 3:  # [batch_size, sequence_length, hidden_size]
-            teacher_cls = teacher_hidden[:, 0, :]  # Take [CLS] token (first token)
+            teacher_emb = teacher_hidden.mean(dim=1)  # Take mean across sequence length
         elif teacher_hidden.dim() == 2:  # [batch_size, hidden_size] - already CLS representation
-            teacher_cls = teacher_hidden
+            teacher_emb = teacher_hidden
         else:
             raise ValueError(f"Unexpected dimension for teacher_hidden: {teacher_hidden.shape}")
 
-        # Project teacher representation to match student dimension using MoE projections
-        # Each expert output should be [batch_size, teacher_hidden_size] to match teacher
-        projected_teacher = teacher_cls  # [batch_size, teacher_hidden_size]
-        
+
+        projected_teacher = teacher_emb  # [batch_size, teacher_hidden_size]
+        print("teacher_embedding:", projected_teacher)
+
         # Compute individual expert losses PER SAMPLE
         expert_losses = []
         
@@ -167,6 +172,7 @@ class MOE(CrossEntropyLossMoE):
         # Expert 2: CKA Loss - compute per sample 
         expert2_output = expert_outputs[1]  # [batch_size, teacher_hidden_size]
         cka_loss_per_sample = self.compute_cka_loss_per_sample(expert2_output, projected_teacher)
+        
         expert_losses.append(cka_loss_per_sample)
         log["expert2_cka_loss"] = cka_loss_per_sample.mean().detach().clone()
         print("expert2_cka_loss:", cka_loss_per_sample.mean().detach().clone())
