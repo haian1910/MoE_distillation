@@ -233,13 +233,12 @@ class MoELayer(nn.Module):
 
 class MoEDistilledBERT(nn.Module):
     """BERT with MoE layer for knowledge distillation - supports both classification and STS"""
-    def __init__(self, bert_model, teacher_hidden_size, num_experts=3, expert_hidden_dim=512, task_type="classification"):
+    def __init__(self, bert_model, teacher_hidden_size, num_experts=3, expert_hidden_dim=512):
         super(MoEDistilledBERT, self).__init__()
         self.bert = bert_model.bert if hasattr(bert_model, 'bert') else bert_model  # Get the base BERT model
         self.bert_hidden_size = self.bert.config.hidden_size
         self.teacher_hidden_size = teacher_hidden_size
         self.config = self.bert.config  # Make sure config is accessible
-        self.task_type = task_type
         
         # MoE layer
         self.moe_layer = MoELayer(
@@ -365,7 +364,6 @@ class MoEDistilledBERT(nn.Module):
             'expert_hidden_dim': self.moe_layer.experts[0].expert[0].out_features,
             'teacher_hidden_size': self.teacher_hidden_size,
             'bert_hidden_size': self.bert_hidden_size,
-            'task_type': self.task_type,
             'uses_token_type_ids': self.uses_token_type_ids
         }
         moe_config_path = os.path.join(save_directory, "moe_config.json")
@@ -544,9 +542,7 @@ class Distiller(nn.Module):
                            help='hidden dimension for expert networks')
         group.add_argument("--moe-lr", type=float, default=0.001,
                            help='learning rate for MoE components')
-        # Task type argument
-        group.add_argument("--task-type", type=str, default="classification", choices=["classification", "sts"],
-                           help='task type: classification or sts')
+   
         return parser
     
     def load_tokenizer(self, path):
@@ -666,7 +662,7 @@ class Distiller(nn.Module):
                 # Apply new LoRA adapter for fine-tuning
                 if self.args.do_train:
                     peft_config = LoraConfig(
-                        task_type=TaskType.FEATURE_EXTRACTION,
+                        task_type = TaskType.FEATURE_EXTRACTION,
                         inference_mode=(not self.args.do_train),
                         r=self.args.peft_lora_r,
                         lora_alpha=self.args.peft_lora_alpha,
@@ -709,7 +705,7 @@ class Distiller(nn.Module):
             )
             
             # Get teacher hidden size
-            teacher_hidden_size = 4096 # hidden dim của LLM2Vec teacher model
+            teacher_hidden_size = 4069 # hidden dim của LLM2Vec teacher model
             
             # Create MoE model
             model = MoEDistilledBERT(
@@ -717,7 +713,6 @@ class Distiller(nn.Module):
                 teacher_hidden_size=teacher_hidden_size,
                 num_experts=getattr(self.args, 'num_experts', 3),
                 expert_hidden_dim=getattr(self.args, 'expert_hidden_dim', 512),
-                task_type=self.task_type
             )
             
             # For STS, wrap with STSMoEWrapper
