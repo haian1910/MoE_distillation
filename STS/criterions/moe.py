@@ -77,7 +77,6 @@ class MOE(MoE_STSLoss):
         loss_mse = nn.MSELoss()
         dtype = next(model.parameters()).dtype
         device = next(model.parameters()).device
-        log = {}
 
         # Convert target to BF16 if needed
         if self.use_bf16 and target.dtype == torch.float32:
@@ -94,7 +93,7 @@ class MOE(MoE_STSLoss):
         predictions = student_outputs.scores
         labels = output_data["labels"].to(dtype)
         loss_sts = loss_mse(predictions, labels)
-    
+        log = {}
 
         with torch.no_grad():
             teacher_model.eval()
@@ -106,12 +105,14 @@ class MOE(MoE_STSLoss):
             )
         
         # Compute MoE distillation loss
+        # Compute distillation loss
+        
         kd_loss, log = self.compute_moe_loss(
             student_outputs, teacher_outputs, output_data, distiller, log
         )
         print("moe_loss:", kd_loss)
         
-        # Compute expert diversity loss - FIX: Use dot notation instead of dictionary access
+        # Compute expert diversity loss - Fixed: use dot notation instead of dictionary indexing
         diversity_loss = self.compute_expert_diversity_loss(student_outputs.expert_outputs)
         log["diversity_loss"] = diversity_loss.detach().clone()
         print("diversity_loss:", diversity_loss.detach().clone())
@@ -152,16 +153,15 @@ class MOE(MoE_STSLoss):
         # Get device for tensor creation
         device = next(distiller.student_model.parameters()).device
         
-        # Get MoE outputs from student model - FIX: Use dot notation for all accesses
-        if hasattr(student_outputs, 'expert_outputs'):
-            expert_outputs = student_outputs.expert_outputs
-            gating_weights = student_outputs.gating_weights
-            student_cls = getattr(student_outputs, 'cls_representation', None)
-        else:
-            # Fallback for dictionary-style access if needed
+        # Get MoE outputs from student model - Fixed: use dot notation consistently
+        if isinstance(student_outputs, dict):
             expert_outputs = student_outputs['expert_outputs']
             gating_weights = student_outputs['gating_weights']
             student_cls = student_outputs.get('cls_representation', None)
+        else:
+            expert_outputs = student_outputs.expert_outputs
+            gating_weights = student_outputs.gating_weights
+            student_cls = getattr(student_outputs, 'cls_representation', None)
         
         # Extract teacher hidden states
         if hasattr(teacher_outputs, 'hidden_states') and teacher_outputs.hidden_states is not None:
