@@ -215,7 +215,7 @@ def finetune(args, tokenizer: AutoTokenizer, model: deepspeed.DeepSpeedEngine, o
 @torch.no_grad()
 def evaluate(args, tokenizer, student_model, dataset, split, device):
     if dist.get_rank() != 0:
-        return None, None, None, None        
+        return None, None, None        
     
     # Use regular DataLoader without DistributedSampler
     dataloader = DataLoader(
@@ -243,10 +243,26 @@ def evaluate(args, tokenizer, student_model, dataset, split, device):
         outputs = student_model(
             input_ids=input_batch["input_ids"],
             attention_mask=input_batch["attention_mask"],
-            token_type_ids=input_batch.get("token_type_ids", None)
+            token_type_ids=input_batch.get("token_type_ids", None),
+            return_moe_outputs=True  # FIXED: Add this parameter to get MoE outputs
         )
         
-        predictions = outputs.scores 
+        # FIXED: Handle different output formats consistently
+        if hasattr(outputs, 'scores'):
+            predictions = outputs.scores
+        elif hasattr(outputs, 'logits'):
+            predictions = outputs.logits
+        elif isinstance(outputs, torch.Tensor):
+            # If outputs is just a tensor, use it directly
+            predictions = outputs
+        elif isinstance(outputs, dict):
+            # If outputs is a dictionary, try to get scores or logits
+            predictions = outputs.get("scores", outputs.get("logits"))
+            if predictions is None:
+                raise ValueError("Could not find 'scores' or 'logits' in model outputs")
+        else:
+            raise ValueError(f"Unexpected output format: {type(outputs)}")
+        
         # Compute MSE loss
         loss = F.mse_loss(predictions, targets)
         
