@@ -666,7 +666,7 @@ class Distiller(nn.Module):
                 # Apply new LoRA adapter for fine-tuning
                 if self.args.do_train:
                     peft_config = LoraConfig(
-                        task_type=TaskType.SEQ_CLS if self.task_type == "classification" else TaskType.FEATURE_EXTRACTION,
+                        task_type=TaskType.FEATURE_EXTRACTION,
                         inference_mode=(not self.args.do_train),
                         r=self.args.peft_lora_r,
                         lora_alpha=self.args.peft_lora_alpha,
