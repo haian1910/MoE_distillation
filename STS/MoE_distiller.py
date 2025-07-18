@@ -485,21 +485,21 @@ class STSMoEWrapper(nn.Module):
                 self.moe_bert.bert.gradient_checkpointing = True
             
     def forward(self, input_ids=None, attention_mask=None, position_ids=None, token_type_ids=None, labels=None, **kwargs):
-        # Forward pass through MoE BERT
-        if return_moe_outputs is None:
-            return_moe_outputs = True
-            
-        outputs = self.moe_bert(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            token_type_ids=token_type_ids,
-            labels=labels,
-            return_moe_outputs=True,
-            **kwargs
-        )
-        
-        return outputs
+      # Extract return_moe_outputs from kwargs to avoid duplicate keyword argument
+      return_moe_outputs = kwargs.pop('return_moe_outputs', False)
+      
+      # Forward pass through MoE BERT
+      outputs = self.moe_bert(
+          input_ids=input_ids,
+          attention_mask=attention_mask,
+          position_ids=position_ids,
+          token_type_ids=token_type_ids,
+          labels=labels,
+          return_moe_outputs=return_moe_outputs,
+          **kwargs
+      )
+      
+      return outputs
 
     def save_pretrained(self, save_directory, safe_serialization=True, **kwargs):
         """Save the model to the specified directory."""
@@ -638,11 +638,11 @@ class Distiller(nn.Module):
 
         if self.args.peft is not None: #for LLM2Vec
             if self.args.peft == "lora":
-                config = AutoConfig.from_pretrained("McGill-NLP/LLM2Vec-Mistral-7B-Instruct-v2-mntp", trust_remote_code=True)
+                config = AutoConfig.from_pretrained("McGill-NLP/LLM2Vec-Sheared-LLaMA-mntp", trust_remote_code=True)
                 config.is_model_parallel = False
         
                 # lấy tokenizer
-                tokenizer = self.load_tokenizer("McGill-NLP/LLM2Vec-Mistral-7B-Instruct-v2-mntp")
+                tokenizer = self.load_tokenizer("McGill-NLP/LLM2Vec-Sheared-LLaMA-mntp")
                 
                 if hasattr(config, "n_embed"):
                     self.hidden_size = config.n_embed
@@ -653,7 +653,7 @@ class Distiller(nn.Module):
                 
                 
                 model = AutoModel.from_pretrained(
-                    "McGill-NLP/LLM2Vec-Mistral-7B-Instruct-v2-mntp",
+                    "McGill-NLP/LLM2Vec-Sheared-LLaMA-mntp",
                     config=config,
                     device_map=None,
                     torch_dtype=self.dtype,
@@ -664,12 +664,12 @@ class Distiller(nn.Module):
                     
                 model = PeftModel.from_pretrained(
                     model,
-                    "McGill-NLP/LLM2Vec-Mistral-7B-Instruct-v2-mntp",
+                    "McGill-NLP/LLM2Vec-Sheared-LLaMA-mntp",
                 )
                 model = model.merge_and_unload()  # This can take several minutes on cpu
 
                 model = PeftModel.from_pretrained(
-                    model, "McGill-NLP/LLM2Vec-Mistral-7B-Instruct-v2-mntp-unsup-simcse"
+                    model, "McGill-NLP/LLM2Vec-Sheared-LLaMA-mntp-unsup-simcse"
                 )
                 model = model.merge_and_unload() 
                 
@@ -752,11 +752,11 @@ class Distiller(nn.Module):
 
         # normal loading
         config = AutoConfig.from_pretrained(
-            "McGill-NLP/LLM2Vec-Mistral-7B-Instruct-v2-mntp",
+            "McGill-NLP/LLM2Vec-Sheared-LLaMA-mntp",
             trust_remote_code=True
         )
         config.is_model_parallel = False
-        tokenizer = self.load_tokenizer("McGill-NLP/LLM2Vec-Mistral-7B-Instruct-v2-mntp")
+        tokenizer = self.load_tokenizer("McGill-NLP/LLM2Vec-Sheared-LLaMA-mntp")
 
         if hasattr(config, "n_embed"):
             self.teacher_hidden_size = config.n_embed
@@ -764,7 +764,7 @@ class Distiller(nn.Module):
             self.teacher_hidden_size = config.hidden_size
 
         base_model = AutoModel.from_pretrained(
-            "McGill-NLP/LLM2Vec-Mistral-7B-Instruct-v2-mntp",
+            "McGill-NLP/LLM2Vec-Sheared-LLaMA-mntp",
             config=config,
             device_map=None,
             torch_dtype=self.dtype,
@@ -776,13 +776,13 @@ class Distiller(nn.Module):
 
         teacher_base_model = PeftModel.from_pretrained(
             base_model,
-            "McGill-NLP/LLM2Vec-Mistral-7B-Instruct-v2-mntp",
+            "McGill-NLP/LLM2Vec-Sheared-LLaMA-mntp",
         )    
 
         teacher_base_model = teacher_base_model.merge_and_unload()
 
         teacher_base_model = PeftModel.from_pretrained(
-            teacher_base_model, "McGill-NLP/LLM2Vec-Mistral-7B-Instruct-v2-mntp-unsup-simcse"
+            teacher_base_model, "McGill-NLP/LLM2Vec-Sheared-LLaMA-mntp-unsup-simcse"
         )
         teacher_base_model = teacher_base_model.merge_and_unload()
 
