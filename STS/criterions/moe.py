@@ -90,7 +90,21 @@ class MOE(MoE_STSLoss):
             return_moe_outputs=True,
             labels=target
         )
-        predictions = student_outputs.scores
+        print(dir(student_outputs))
+        
+        # FIXED: Use dot notation instead of dictionary indexing
+        # Check if student_outputs has scores attribute, otherwise use logits
+        if hasattr(student_outputs, 'scores'):
+            predictions = student_outputs.scores
+        elif hasattr(student_outputs, 'logits'):
+            predictions = student_outputs.logits
+        else:
+            # Try to access as dictionary if it's actually a dict
+            if isinstance(student_outputs, dict):
+                predictions = student_outputs.get("scores", student_outputs.get("logits"))
+            else:
+                raise AttributeError("student_outputs does not have 'scores' or 'logits' attribute")
+        
         labels = output_data["labels"].to(dtype)
         loss_sts = loss_mse(predictions, labels)
         log = {}
@@ -124,10 +138,7 @@ class MOE(MoE_STSLoss):
         log["loss"] = loss.detach().clone()  # Store as tensor for distributed logging
 
 
-        # Update logging output
-        logging_output = self.record_logging_output(
-            logging_output, batch_denom, log
-        )
+        
         return loss, logging_output
         
 
