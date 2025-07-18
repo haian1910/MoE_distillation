@@ -22,6 +22,137 @@ from huggingface_hub import login
 import torch.distributed as dist
 import os
 
+class STSModel(nn.Module):
+    """Wrapper for STS (Semantic Textual Similarity) tasks using a base model"""
+    def __init__(self, base_model):
+        super(STSModel, self).__init__()
+        self.base_model = base_model
+        self.config = base_model.config  # Expose config for save_pretrained
+        
+        # Get the hidden size from the base model
+        self.hidden_size = base_model.config.hidden_size
+
+        # Create a regression head for STS score prediction (0-5 scale typically)
+        self.regressor = nn.Sequential(
+            nn.Linear(self.hidden_size, self.hidden_size // 2),
+            nn.Tanh(),
+            nn.Linear(self.hidden_size // 2, 1)
+        )
+
+        # Check model type to determine which arguments it accepts
+        self.uses_token_type_ids = hasattr(base_model.config, "type_vocab_size") and base_model.config.type_vocab_size > 0
+        
+    def device(self):
+        return next(self.parameters()).device
+        
+    def get_input_embeddings(self):
+        """Return the input embeddings from the base model"""
+        if hasattr(self.base_model, "get_input_embeddings"):
+            return self.base_model.get_input_embeddings()
+        elif hasattr(self.base_model, "bert") and hasattr(self.base_model.bert, "embeddings"):
+            return self.base_model.bert.embeddings.word_embeddings  # BERT-specific
+        elif hasattr(self.base_model, "model") and hasattr(self.base_model.model, "embed_tokens"):
+            return self.base_model.model.embed_tokens  # LLaMA-like
+        elif hasattr(self.base_model, "transformer") and hasattr(self.base_model.transformer, "wte"):
+            return self.base_model.transformer.wte  # GPT-like
+        else:
+            raise NotImplementedError("Unsupported model architecture for embedding extraction")
+            
+    def forward(self, input_ids=None, attention_mask=None, position_ids=None, token_type_ids=None, labels=None, **kwargs):
+        # Filter kwargs to only include parameters accepted by the base model
+        filtered_kwargs = {}
+        for key, value in kwargs.items():
+            # Skip labels as they'll be handled separately
+            if key == 'labels':
+                continue  # Don't pass labels to base model
+            if key == 'token_type_ids' and not self.uses_token_type_ids:
+                continue  # Don't pass token_type_ids if model doesn't use them
+
+            filtered_kwargs[key] = value
+
+        # Only pass token_type_ids if the model supports it
+        if self.uses_token_type_ids and token_type_ids is not None:
+            filtered_kwargs["token_type_ids"] = token_type_ids
+
+        # Make sure we get hidden states and attentions
+        filtered_kwargs["output_hidden_states"] = True
+        filtered_kwargs["output_attentions"] = True
+
+        # Get outputs from the base model with filtered kwargs
+        outputs = self.base_model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            **filtered_kwargs
+        )
+
+        # Get the CLS token representation (for sentence embedding)
+        pooled_output = outputs.last_hidden_state[:, 0]
+
+        # Apply the regressor to get similarity score
+        score = self.regressor(pooled_output)
+        
+        # Ensure the predicted score is within a reasonable range (0-5)
+        score = torch.sigmoid(score) * 5.0
+
+        loss = None
+        if labels is not None:
+            # Use MSE loss for regression task
+            loss_fct = nn.MSELoss()
+            loss = loss_fct(score.view(-1), labels.view(-1))
+
+        # Create a comprehensive output structure
+        class STSModelOutput:
+            def __init__(self, loss, scores, hidden_states, attentions, last_hidden_state=None):
+                self.loss = loss
+                self.scores = scores
+                self.hidden_states = hidden_states
+                self.attentions = attentions
+                self.last_hidden_state = last_hidden_state
+
+        # Return complete output with original hidden states and attentions
+        return STSModelOutput(
+            loss=loss,
+            scores=score,
+            hidden_states=outputs.hidden_states if hasattr(outputs, "hidden_states") else None,
+            attentions=outputs.attentions if hasattr(outputs, "attentions") else None,
+            last_hidden_state=outputs.last_hidden_state if hasattr(outputs, "last_hidden_state") else None
+        )
+
+    # Add HuggingFace compatibility methods
+    def save_pretrained(self, save_directory, safe_serialization=True, **kwargs):
+        """Save the model to the specified directory."""
+        # Save the regressor separately
+        os.makedirs(save_directory, exist_ok=True)
+        regressor_path = os.path.join(save_directory, "regressor.pt")
+        torch.save(self.regressor.state_dict(), regressor_path)
+
+        # Save wrapper config
+        config_dict = {
+            "uses_token_type_ids": self.uses_token_type_ids
+        }
+        with open(os.path.join(save_directory, "sts_model_config.json"), "w") as f:
+            json.dump(config_dict, f)
+
+        # Save the base model
+        return self.base_model.save_pretrained(save_directory, safe_serialization=safe_serialization, **kwargs)
+
+    @classmethod
+    def from_pretrained(cls, pretrained_model_name_or_path, *model_args, **kwargs):
+        """Load from pretrained."""
+        # First load the base model
+        base_model = AutoModel.from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
+
+        # Create the wrapper
+        model = cls(base_model)
+
+        # Load regressor weights if they exist
+        regressor_path = os.path.join(pretrained_model_name_or_path, "regressor.pt")
+        if os.path.exists(regressor_path):
+            regressor_state_dict = torch.load(regressor_path, map_location="cpu")
+            model.regressor.load_state_dict(regressor_state_dict)
+
+        return model
 
 class ExpertNetwork(nn.Module):
     """Individual expert network for MoE"""
@@ -56,7 +187,7 @@ class GatingNetwork(nn.Module):
 
 class MoELayer(nn.Module):
     """Mixture of Experts layer"""
-    def __init__(self, input_dim, output_dim, num_experts=3, expert_hidden_dim=128):
+    def __init__(self, input_dim, output_dim, num_experts=3, expert_hidden_dim=512):
         super(MoELayer, self).__init__()
         self.num_experts = num_experts
         self.input_dim = input_dim
@@ -101,13 +232,13 @@ class MoELayer(nn.Module):
         return expert_outputs, gating_weights, final_output
 
 class MoEDistilledBERT(nn.Module):
-    """BERT with MoE layer for knowledge distillation"""
-    def __init__(self, bert_model, teacher_hidden_size, num_experts=3, expert_hidden_dim=128):
+    """BERT with MoE layer for knowledge distillation - supports both classification and STS"""
+    def __init__(self, bert_model, teacher_hidden_size, num_experts=3, expert_hidden_dim=512):
         super(MoEDistilledBERT, self).__init__()
-        self.bert = bert_model
-        self.bert_hidden_size = bert_model.config.hidden_size
+        self.bert = bert_model.bert if hasattr(bert_model, 'bert') else bert_model  # Get the base BERT model
+        self.bert_hidden_size = self.bert.config.hidden_size
         self.teacher_hidden_size = teacher_hidden_size
-        self.config = bert_model.config  # Make sure config is accessible
+        self.config = self.bert.config  # Make sure config is accessible
         
         # MoE layer
         self.moe_layer = MoELayer(
@@ -117,27 +248,45 @@ class MoEDistilledBERT(nn.Module):
             expert_hidden_dim=expert_hidden_dim
         )
         
-        # Keep original classifier for final predictions
-        self.classifier = bert_model.classifier
-        
+        # Task-specific heads
+            # STS regression head
+        self.regressor = nn.Sequential(
+            nn.Linear(self.bert_hidden_size, self.bert_hidden_size // 2),
+            nn.Tanh(),
+            nn.Linear(self.bert_hidden_size // 2, 1)
+        )
+
         # Make sure dropout is accessible
-        self.dropout = bert_model.dropout
+        self.dropout = bert_model.dropout if hasattr(bert_model, 'dropout') else nn.Dropout(0.1)
         
-    def forward(self, input_ids, attention_mask=None, token_type_ids=None, 
-                return_moe_outputs=False, labels=None):
+        # Check if model uses token_type_ids
+        self.uses_token_type_ids = hasattr(self.config, "type_vocab_size") and self.config.type_vocab_size > 0
+        
+    def forward(self, input_ids, attention_mask=None, token_type_ids=None, position_ids=None,
+                return_moe_outputs=False, labels=None, **kwargs):
         """
         Args:
             input_ids: Input token ids
             attention_mask: Attention mask
             token_type_ids: Token type ids
+            position_ids: Position ids
             return_moe_outputs: Whether to return MoE intermediate outputs
             labels: Labels for computing loss (if needed)
         """
+        # Filter kwargs for BERT forward pass
+        bert_kwargs = {}
+        if self.uses_token_type_ids and token_type_ids is not None:
+            bert_kwargs["token_type_ids"] = token_type_ids
+        if position_ids is not None:
+            bert_kwargs["position_ids"] = position_ids
+        
         # Get BERT outputs
-        bert_outputs = self.bert.bert(
+        bert_outputs = self.bert(
             input_ids=input_ids,
             attention_mask=attention_mask,
-            token_type_ids=token_type_ids
+            output_hidden_states=True,
+            output_attentions=True,
+            **bert_kwargs
         )
         
         # Get [CLS] token representation
@@ -149,32 +298,51 @@ class MoEDistilledBERT(nn.Module):
         # Pass through MoE layer
         expert_outputs, gating_weights, moe_final_output = self.moe_layer(cls_output)
         
-        # Get final classification logits using original classifier
-        classification_logits = self.classifier(cls_output)
+      
+        # For STS, apply regressor to get similarity score
+        scores = self.regressor(cls_output)
+        # Ensure the predicted score is within a reasonable range (0-5)
+        scores = torch.sigmoid(scores) * 5.0
+        logits = scores  # For compatibility
         
-        # Compute loss if labels are provided
         loss = None
         if labels is not None:
-            loss_fct = nn.CrossEntropyLoss()
-            loss = loss_fct(classification_logits.view(-1, self.config.num_labels), labels.view(-1))
+            loss_fct = nn.MSELoss()
+            loss = loss_fct(scores.view(-1), labels.view(-1))
+    
+        # Create output structure
+        class MoEModelOutput:
+            def __init__(self, loss, logits, expert_outputs=None, gating_weights=None, 
+                        moe_final_output=None, cls_representation=None, hidden_states=None, 
+                        attentions=None, scores=None):
+                self.loss = loss
+                self.logits = logits
+                self.scores = scores   # For STS compatibility
+                self.expert_outputs = expert_outputs
+                self.gating_weights = gating_weights
+                self.moe_final_output = moe_final_output
+                self.cls_representation = cls_representation
+                self.hidden_states = hidden_states
+                self.attentions = attentions
+                self.last_hidden_state = hidden_states[-1] if hidden_states else None
         
         if return_moe_outputs:
-            return {
-                'loss': loss,
-                'logits': classification_logits,
-                'expert_outputs': expert_outputs,
-                'gating_weights': gating_weights,
-                'moe_final_output': moe_final_output,
-                'cls_representation': cls_output,
-                'hidden_states': bert_outputs.last_hidden_state,
-                'pooler_output': cls_output
-            }
+            return MoEModelOutput(
+                loss=loss,
+                logits=logits,
+                scores=scores,
+                expert_outputs=expert_outputs,
+                gating_weights=gating_weights,
+                moe_final_output=moe_final_output,
+                cls_representation=cls_output,
+                hidden_states=bert_outputs.hidden_states,
+                attentions=bert_outputs.attentions
+            )
+        elif loss is not None:
+            return MoEModelOutput(loss=loss, logits=logits, scores=scores)
         else:
-            if loss is not None:
-                return {'loss': loss, 'logits': classification_logits}
-            else:
-                return classification_logits
-    
+            return logits
+
     def save_pretrained(self, save_directory, safe_serialization=True, **kwargs):
         """
         Save the model to a directory.
@@ -195,12 +363,17 @@ class MoEDistilledBERT(nn.Module):
             'num_experts': self.moe_layer.num_experts,
             'expert_hidden_dim': self.moe_layer.experts[0].expert[0].out_features,
             'teacher_hidden_size': self.teacher_hidden_size,
-            'bert_hidden_size': self.bert_hidden_size
+            'bert_hidden_size': self.bert_hidden_size,
+            'uses_token_type_ids': self.uses_token_type_ids
         }
         moe_config_path = os.path.join(save_directory, "moe_config.json")
         with open(moe_config_path, 'w') as f:
             json.dump(moe_config, f, indent=2)
         
+        # Save task-specific head
+        regressor_path = os.path.join(save_directory, "regressor.pt")
+        torch.save(self.regressor.state_dict(), regressor_path)
+    
         log_rank(f"Model saved to {save_directory}")
     
     @classmethod
@@ -219,19 +392,19 @@ class MoEDistilledBERT(nn.Module):
         with open(moe_config_path, 'r') as f:
             moe_config = json.load(f)
         
-        # Create base BERT model
-        bert_model = AutoModelForSequenceClassification.from_pretrained(
-            "bert-base-uncased",  # Use base BERT as template
+      
+        bert_model = AutoModel.from_pretrained(
+            "bert-base-uncased",
             config=config,
             **kwargs
         )
-        
+    
         # Create MoE model
         model = cls(
             bert_model=bert_model,
             teacher_hidden_size=moe_config['teacher_hidden_size'],
             num_experts=moe_config['num_experts'],
-            expert_hidden_dim=moe_config['expert_hidden_dim']
+            expert_hidden_dim=moe_config['expert_hidden_dim'],
         )
         
         # Load state dict
@@ -239,22 +412,28 @@ class MoEDistilledBERT(nn.Module):
         state_dict = torch.load(model_path, map_location='cpu')
         model.load_state_dict(state_dict)
         
+        # Load task-specific head if exists
+        regressor_path = os.path.join(pretrained_model_name_or_path, "regressor.pt")
+        if os.path.exists(regressor_path):
+            regressor_state_dict = torch.load(regressor_path, map_location='cpu')
+            model.regressor.load_state_dict(regressor_state_dict)
+        
         return model
                 
     def get_input_embeddings(self):
         """For compatibility with transformers"""
-        return self.bert.bert.embeddings.word_embeddings
+        return self.bert.embeddings.word_embeddings
         
     def set_input_embeddings(self, new_embeddings):
         """For compatibility with transformers"""
-        self.bert.bert.embeddings.word_embeddings = new_embeddings
+        self.bert.embeddings.word_embeddings = new_embeddings
         
     def gradient_checkpointing_enable(self):
         """Enable gradient checkpointing"""
         if hasattr(self.bert, 'gradient_checkpointing_enable'):
             self.bert.gradient_checkpointing_enable()
         else:
-            self.bert.bert.gradient_checkpointing = True
+            self.bert.gradient_checkpointing = True
     
     def resize_token_embeddings(self, new_num_tokens):
         """Resize token embeddings"""
@@ -262,11 +441,13 @@ class MoEDistilledBERT(nn.Module):
     
     def get_output_embeddings(self):
         """Get output embeddings"""
-        return self.classifier
+       
+        return self.regressor
     
     def set_output_embeddings(self, new_embeddings):
         """Set output embeddings"""
-        self.classifier = new_embeddings
+       
+        self.regressor = new_embeddings
     
     def tie_weights(self):
         """Tie weights if needed"""
@@ -275,6 +456,60 @@ class MoEDistilledBERT(nn.Module):
     def prepare_inputs_for_generation(self, input_ids, **kwargs):
         """Prepare inputs for generation (if needed)"""
         return {"input_ids": input_ids}
+
+class STSMoEWrapper(nn.Module):
+    """Wrapper for STS tasks using MoE BERT model"""
+    def __init__(self, moe_bert_model):
+        super(STSMoEWrapper, self).__init__()
+        self.moe_bert = moe_bert_model
+        self.config = moe_bert_model.config
+        self.hidden_size = moe_bert_model.bert_hidden_size
+        self.uses_token_type_ids = moe_bert_model.uses_token_type_ids
+        
+    def device(self):
+        return next(self.parameters()).device
+        
+    def get_input_embeddings(self):
+        """Return the input embeddings from the MoE model"""
+        return self.moe_bert.get_input_embeddings()
+    
+    def gradient_checkpointing_enable(self):
+        """Enable gradient checkpointing by delegating to the underlying MoE model"""
+        if hasattr(self.moe_bert, 'gradient_checkpointing_enable'):
+            self.moe_bert.gradient_checkpointing_enable()
+        else:
+            # Fallback to enabling on the BERT model directly
+            if hasattr(self.moe_bert.bert, 'gradient_checkpointing_enable'):
+                self.moe_bert.bert.gradient_checkpointing_enable()
+            else:
+                self.moe_bert.bert.gradient_checkpointing = True
+            
+    def forward(self, input_ids=None, attention_mask=None, position_ids=None, token_type_ids=None, labels=None, **kwargs):
+      # Extract return_moe_outputs from kwargs to avoid duplicate keyword argument
+      return_moe_outputs = kwargs.pop('return_moe_outputs', False)
+      
+      # Forward pass through MoE BERT
+      outputs = self.moe_bert(
+          input_ids=input_ids,
+          attention_mask=attention_mask,
+          position_ids=position_ids,
+          token_type_ids=token_type_ids,
+          labels=labels,
+          return_moe_outputs=return_moe_outputs,
+          **kwargs
+      )
+      
+      return outputs
+
+    def save_pretrained(self, save_directory, safe_serialization=True, **kwargs):
+        """Save the model to the specified directory."""
+        return self.moe_bert.save_pretrained(save_directory, safe_serialization=safe_serialization, **kwargs)
+
+    @classmethod
+    def from_pretrained(cls, pretrained_model_name_or_path, *model_args, **kwargs):
+        """Load from pretrained."""
+        moe_bert = MoEDistilledBERT.from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
+        return cls(moe_bert)
 
 class Distiller(nn.Module):
     def __init__(self, args, device):
@@ -317,10 +552,11 @@ class Distiller(nn.Module):
         # MoE specific arguments
         group.add_argument("--num-experts", type=int, default=3,
                            help='number of experts in MoE layer')
-        group.add_argument("--expert-hidden-dim", type=int, default=128,
+        group.add_argument("--expert-hidden-dim", type=int, default=512,
                            help='hidden dimension for expert networks')
         group.add_argument("--moe-lr", type=float, default=0.001,
                            help='learning rate for MoE components')
+   
         return parser
     
     def load_tokenizer(self, path):
@@ -402,20 +638,22 @@ class Distiller(nn.Module):
 
         if self.args.peft is not None: #for LLM2Vec
             if self.args.peft == "lora":
-                config = AutoConfig.from_pretrained("McGill-NLP/LLM2Vec-Mistral-7B-Instruct-v2-mntp", trust_remote_code=True)
+                config = AutoConfig.from_pretrained("McGill-NLP/LLM2Vec-Sheared-LLaMA-mntp", trust_remote_code=True)
                 config.is_model_parallel = False
         
                 # lấy tokenizer
-                tokenizer = self.load_tokenizer("McGill-NLP/LLM2Vec-Mistral-7B-Instruct-v2-mntp")
+                tokenizer = self.load_tokenizer("McGill-NLP/LLM2Vec-Sheared-LLaMA-mntp")
                 
                 if hasattr(config, "n_embed"):
                     self.hidden_size = config.n_embed
                 else:
                     self.hidden_size = config.hidden_size
         
-                config.num_labels = self.args.num_labels
-                model = AutoModelForSequenceClassification.from_pretrained(
-                    "McGill-NLP/LLM2Vec-Mistral-7B-Instruct-v2-mntp",
+                config.num_labels = getattr(self.args, 'num_labels', 2)  # Default to 2 for binary classification
+                
+                
+                model = AutoModel.from_pretrained(
+                    "McGill-NLP/LLM2Vec-Sheared-LLaMA-mntp",
                     config=config,
                     device_map=None,
                     torch_dtype=self.dtype,
@@ -426,18 +664,19 @@ class Distiller(nn.Module):
                     
                 model = PeftModel.from_pretrained(
                     model,
-                    "McGill-NLP/LLM2Vec-Mistral-7B-Instruct-v2-mntp",
+                    "McGill-NLP/LLM2Vec-Sheared-LLaMA-mntp",
                 )
                 model = model.merge_and_unload()  # This can take several minutes on cpu
 
                 model = PeftModel.from_pretrained(
-                    model, "McGill-NLP/LLM2Vec-Mistral-7B-Instruct-v2-mntp-unsup-simcse"
+                    model, "McGill-NLP/LLM2Vec-Sheared-LLaMA-mntp-unsup-simcse"
                 )
                 model = model.merge_and_unload() 
+                
                 # Apply new LoRA adapter for fine-tuning
                 if self.args.do_train:
                     peft_config = LoraConfig(
-                        task_type=TaskType.SEQ_CLS,  # SEQ_CLS là hợp lý nếu đang làm classification
+                        task_type = TaskType.FEATURE_EXTRACTION,
                         inference_mode=(not self.args.do_train),
                         r=self.args.peft_lora_r,
                         lora_alpha=self.args.peft_lora_alpha,
@@ -451,6 +690,10 @@ class Distiller(nn.Module):
                     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
                     all_params = sum(p.numel() for p in model.parameters())
                     print(f"Trainable parameters: {trainable_params}/{all_params} ({trainable_params/all_params:.2%})")
+                    
+                # For STS, wrap with STSModel
+                model = STSModel(model)
+                    
             else:
                 raise NotImplementedError
         else: #for BERT with MoE
@@ -464,10 +707,10 @@ class Distiller(nn.Module):
                 self.hidden_size = config.n_embed
             else:
                 self.hidden_size = config.hidden_size
-            config.num_labels = self.args.num_labels
             
-            # Load base BERT model
-            bert_model = AutoModelForSequenceClassification.from_pretrained(
+            
+            # Load base BERT model for feature extraction
+            bert_model = AutoModel.from_pretrained(
                 "bert-base-uncased", 
                 config=config, 
                 device_map=None, 
@@ -475,17 +718,19 @@ class Distiller(nn.Module):
                 trust_remote_code=True,
             )
             
-            # Wrap with MoE layer
-            # Get teacher hidden size if available
-            #teacher_hidden_size = getattr(self, 'teacher_hidden_size', self.hidden_size)
-            teacher_hidden_size = 4096 # hidden dim của LLM2Vec teacher model
+            # Get teacher hidden size
+            teacher_hidden_size = 2048 # hidden dim của LLM2Vec teacher model
             
+            # Create MoE model
             model = MoEDistilledBERT(
                 bert_model=bert_model,
                 teacher_hidden_size=teacher_hidden_size,
                 num_experts=getattr(self.args, 'num_experts', 3),
-                expert_hidden_dim=getattr(self.args, 'expert_hidden_dim', 128)
+                expert_hidden_dim=getattr(self.args, 'expert_hidden_dim', 512),
             )
+            
+            # For STS, wrap with STSMoEWrapper
+            model = STSMoEWrapper(model)
             
             log_rank(' > number of parameters: {:,}'.format(
                 sum([p.nelement() for p in model.parameters()])
@@ -497,88 +742,95 @@ class Distiller(nn.Module):
         return model, tokenizer
     
     def load_teacher_model(self):
-        log_rank("Loading teacher model...")
+        log_rank("Loading teacher model from checkpoint...")
+
+        if not os.path.exists(self.args.teacher_model_path):
+            raise ValueError(f"Teacher model path does not exist: {self.args.teacher_model_path}")
+        regressor_path = os.path.join(self.args.teacher_model_path, "regressor.pt")
+        model_files = os.listdir(self.args.teacher_model_path)
+        log_rank(f"Found files in teacher model directory: {model_files}")
+
+        # normal loading
         config = AutoConfig.from_pretrained(
-            "McGill-NLP/LLM2Vec-Mistral-7B-Instruct-v2-mntp",
+            "McGill-NLP/LLM2Vec-Sheared-LLaMA-mntp",
             trust_remote_code=True
         )
         config.is_model_parallel = False
-
-        tokenizer = self.load_tokenizer("McGill-NLP/LLM2Vec-Mistral-7B-Instruct-v2-mntp")
+        tokenizer = self.load_tokenizer("McGill-NLP/LLM2Vec-Sheared-LLaMA-mntp")
 
         if hasattr(config, "n_embed"):
             self.teacher_hidden_size = config.n_embed
         else:
             self.teacher_hidden_size = config.hidden_size
 
-        config.num_labels = self.args.num_labels
-        model = AutoModelForSequenceClassification.from_pretrained(
-            "McGill-NLP/LLM2Vec-Mistral-7B-Instruct-v2-mntp",
+        base_model = AutoModel.from_pretrained(
+            "McGill-NLP/LLM2Vec-Sheared-LLaMA-mntp",
             config=config,
             device_map=None,
             torch_dtype=self.dtype,
             trust_remote_code=True,
         )
-        model.config.pad_token_id = 2
-        teacher_model = PeftModel.from_pretrained(
-            model,
-            "McGill-NLP/LLM2Vec-Mistral-7B-Instruct-v2-mntp",
+
+        if hasattr(base_model.config, "pad_token_id"):
+            base_model.config.pad_token_id = 2
+
+        teacher_base_model = PeftModel.from_pretrained(
+            base_model,
+            "McGill-NLP/LLM2Vec-Sheared-LLaMA-mntp",
         )    
-        
-        teacher_model = teacher_model.merge_and_unload()  # This can take several minutes on cpu
 
-        # Loading unsupervised SimCSE model. This loads the trained LoRA weights on top of MNTP model. Hence the final weights are -- Base model + MNTP (LoRA) + SimCSE (LoRA).
-        teacher_model = PeftModel.from_pretrained(
-            teacher_model, "McGill-NLP/LLM2Vec-Mistral-7B-Instruct-v2-mntp-unsup-simcse"
+        teacher_base_model = teacher_base_model.merge_and_unload()
+
+        teacher_base_model = PeftModel.from_pretrained(
+            teacher_base_model, "McGill-NLP/LLM2Vec-Sheared-LLaMA-mntp-unsup-simcse"
         )
-        teacher_model = teacher_model.merge_and_unload()
+        teacher_base_model = teacher_base_model.merge_and_unload()
 
-        if hasattr(self.args, 'teacher_model_path') and self.args.teacher_model_path:
-            
-            # Path to the adapter model weights
-            adapter_path = os.path.join(self.args.teacher_model_path, "adapter_model.bin")
-            fixed_adapter_path = adapter_path + ".fixed"
-            if not os.path.exists(fixed_adapter_path):
-                if dist.get_rank() == 0:
-                    # Load the checkpoint and fix the keys
-                    checkpoint = torch.load(adapter_path)            
-                    fixed_checkpoint = {}
-                    
-                    for key, value in checkpoint.items():
-                        if "lora_A.weight" in key and "default" not in key:
-                            key = key.replace("lora_A.weight", "lora_A.default.weight")
-                        if "lora_B.weight" in key and "default" not in key:
-                            key = key.replace("lora_B.weight", "lora_B.default.weight")
-                        if "base_model.model.base_model.model" in key:
-                            key = key.replace("base_model.model.base_model.model", "base_model.model")
-                            
-                        fixed_checkpoint[key] = value
-                    
-                    # Save the fixed checkpoint back to the original file
-                    if fixed_checkpoint: 
-                        torch.save(fixed_checkpoint, fixed_adapter_path)
-            
-            dist.barrier()  
-            
-            teacher_model = PeftModel.from_pretrained(
-                teacher_model,
-                self.args.teacher_model_path,
-                adapter_name="default",
-                adapter_weights_path=fixed_adapter_path
-            )
+        def load_peft_model_with_remapped_keys(base_model, teacher_model_path):
+            config_path = os.path.join(teacher_model_path, "adapter_config.json")
+            if os.path.exists(config_path):
+                from peft import PeftConfig
+                peft_config = PeftConfig.from_pretrained(teacher_model_path)
+                peft_model = PeftModel(base_model, peft_config)
+            else:
+                # If no config file, you'll need to manually create one as in the previous solution
+                raise ValueError("No adapter_config.json found and direct loading failed")
+            adap_path = os.path.join(teacher_model_path, "adapter_model.bin")
+            # Remap keys to fix nesting and naming issues
+            remapped_state_dict = {}
+            checkpoint = torch.load(adap_path)
 
-        classifier_path = os.path.join(self.args.teacher_model_path, "classifier_head.bin")
-        if os.path.exists(classifier_path):
-            log_rank("Loading classifier head from trained model...")
-            classifier_state_dict = torch.load(classifier_path, map_location="cpu")
-            teacher_model.score.load_state_dict(classifier_state_dict)
+            for key, value in checkpoint.items():
+                new_key = key.replace("base_model.model.base_model.model", "base_model.model")
+                new_key = new_key.replace("lora_A.weight", "lora_A.default.weight")
+                new_key = new_key.replace("lora_B.weight", "lora_B.default.weight")
+                remapped_state_dict[new_key] = value
+            
+            # Load remapped state dictionary
+            peft_model.load_state_dict(remapped_state_dict, strict=False)
+            print("LoRA loaded")
+            return peft_model
+
+        teacher_base_model = load_peft_model_with_remapped_keys(
+            teacher_base_model,
+            self.args.teacher_model_path
+        )
+
+        teacher_model = STSModel(teacher_base_model)
+        # Load regressor if available
+        if os.path.exists(regressor_path):
+            log_rank("Loading regressor weights")
+            regressor_state_dict = torch.load(regressor_path, map_location="cpu")
+            teacher_model.regressor.load_state_dict(regressor_state_dict)
         else:
-            log_rank("No classifier head found in teacher model path. Using default classifier.")
+            log_rank("No regressor.pt found, using initialized regressor")
+
+        # Freeze the teacher model parameters
         for param in teacher_model.parameters():
             param.requires_grad = False
-        
+
+        log_rank("Teacher model loaded successfully")
         return teacher_model, tokenizer
-    
     def add_optimizer_param_group(self, optimizer):
         """
         Add parameter groups to optimizer, ensuring no parameter appears in multiple groups
