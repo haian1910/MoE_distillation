@@ -472,9 +472,23 @@ class STSMoEWrapper(nn.Module):
     def get_input_embeddings(self):
         """Return the input embeddings from the MoE model"""
         return self.moe_bert.get_input_embeddings()
+    
+    def gradient_checkpointing_enable(self):
+        """Enable gradient checkpointing by delegating to the underlying MoE model"""
+        if hasattr(self.moe_bert, 'gradient_checkpointing_enable'):
+            self.moe_bert.gradient_checkpointing_enable()
+        else:
+            # Fallback to enabling on the BERT model directly
+            if hasattr(self.moe_bert.bert, 'gradient_checkpointing_enable'):
+                self.moe_bert.bert.gradient_checkpointing_enable()
+            else:
+                self.moe_bert.bert.gradient_checkpointing = True
             
     def forward(self, input_ids=None, attention_mask=None, position_ids=None, token_type_ids=None, labels=None, **kwargs):
         # Forward pass through MoE BERT
+        if return_moe_outputs is None:
+            return_moe_outputs = True
+            
         outputs = self.moe_bert(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -705,7 +719,7 @@ class Distiller(nn.Module):
             )
             
             # Get teacher hidden size
-            teacher_hidden_size = 4069 # hidden dim của LLM2Vec teacher model
+            teacher_hidden_size = 2048 # hidden dim của LLM2Vec teacher model
             
             # Create MoE model
             model = MoEDistilledBERT(
