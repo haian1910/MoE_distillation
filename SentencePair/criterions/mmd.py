@@ -22,21 +22,20 @@ class MMD(CrossEntropyLossMoE):
         teacher_model = distiller.teacher_model
         self.distiller = distiller
         
-        # Student forward pass
+        # Student forward pass - now with correct parameters
         outputs = model(
             input_data["input_ids"],
             attention_mask=input_data["attention_mask"],
             return_moe_outputs=True,
-            output_hidden_states=True,  # Add this to get hidden states
-            return_dict=True  # Ensure structured output
+            output_hidden_states=True,  # This should now work
+            return_dict=True,  # Ensure structured output
+            labels=output_data["labels"]  # Add labels for loss computation
         )
         
-        if isinstance(outputs, dict) and 'logits' in outputs:
-            logits = outputs['logits']
-        elif isinstance(outputs, torch.Tensor):
-            logits = outputs
-        else:
-            raise TypeError("Model outputs must be a dictionary with 'logits' or a tensor")
+       
+        
+        # Extract logits from the structured output
+        logits = outputs['logits']
         
         log = {}
         
@@ -125,38 +124,50 @@ class MMD(CrossEntropyLossMoE):
         return torch.mean(XX + YY - 2. * XY)
 
     def compute_mmd_loss(
-        self, outputs, teacher_outputs, output_data, distiller, log
-    ):
+    self, outputs, teacher_outputs, output_data, distiller, log
+):
         """
         Compute MMD loss between student and teacher hidden states
         
         Args:
-            outputs: Student model outputs (should contain hidden_states)
-            teacher_outputs: Teacher model outputs (should contain hidden_states)
+            outputs: Student model outputs (dictionary with 'hidden_states' key)
+            teacher_outputs: Teacher model outputs (dictionary with 'hidden_states' key)
             output_data: Not used in this function
             distiller: Distiller object containing projectors
             log: Logging dictionary
         """
         total_mmd_loss = 0.0
         
+        # Handle both dictionary and object outputs for student
+        if isinstance(outputs, dict):
+            student_hidden_states = outputs.get('hidden_states', None)
+        else:
+            student_hidden_states = getattr(outputs, 'hidden_states', None)
+        
+        # Handle both dictionary and object outputs for teacher
+        if isinstance(teacher_outputs, dict):
+            teacher_hidden_states = teacher_outputs.get('hidden_states', None)
+        else:
+            teacher_hidden_states = getattr(teacher_outputs, 'hidden_states', None)
+        
         # Check if hidden states are available
-        if not hasattr(outputs, 'hidden_states') or outputs.hidden_states is None:
+        if student_hidden_states is None:
             raise ValueError("Student model outputs don't contain hidden_states. Make sure to call model with output_hidden_states=True")
         
-        if not hasattr(teacher_outputs, 'hidden_states') or teacher_outputs.hidden_states is None:
+        if teacher_hidden_states is None:
             raise ValueError("Teacher model outputs don't contain hidden_states. Make sure to call model with output_hidden_states=True")
         
+       
         # Define the layers to process (adjust these based on your student model architecture)
         # For BERT-base, layers are typically 0-11, so using last few layers
         student_layers_to_process = [10, 11]  # Can modify based on your needs
         
-        teacher_layer_num = len(teacher_outputs.hidden_states)
-        student_layer_num = len(outputs.hidden_states)
+        teacher_layer_num = len(teacher_hidden_states)
+        student_layer_num = len(student_hidden_states)
         
         # Calculate mapping rate to align teacher and student layers
-        map_rate = max(1, teacher_layer_num // student_layer_num)
+        map_rate = 3
         
-        print(f"Teacher layers: {teacher_layer_num}, Student layers: {student_layer_num}, Map rate: {map_rate}")
         
         for k in student_layers_to_process:
             if k >= student_layer_num:
@@ -168,7 +179,7 @@ class MMD(CrossEntropyLossMoE):
             
             try:
                 # Get student hidden state: [batch_size, seq_len, hidden_dim]
-                stu_k_hidden = outputs.hidden_states[k]
+                stu_k_hidden = student_hidden_states[k]
                 
                 # Project student hidden state to teacher's embedding space
                 if hasattr(distiller, 'projectors') and "query" in distiller.projectors:
@@ -180,25 +191,21 @@ class MMD(CrossEntropyLossMoE):
                     stu_k_hidden_projected = stu_k_hidden
                 
                 # Get teacher hidden state: [batch_size, seq_len, hidden_dim]
-                tea_k_hidden = teacher_outputs.hidden_states[teacher_layer_idx]
-                
-                print(f"Processing layer - Student: {k}, Teacher: {teacher_layer_idx}")
-                print(f"Student hidden shape: {stu_k_hidden_projected.shape}, Teacher hidden shape: {tea_k_hidden.shape}")
-                
-                # Handle sequence length mismatch if necessary
+                tea_k_hidden = teacher_hidden_states[teacher_layer_idx]
                 
                 
                 # Compute MMD loss between the hidden states
                 mmd_loss = self.mmd(stu_k_hidden_projected, tea_k_hidden, kernel="multiscale")
                 total_mmd_loss += mmd_loss
                 
-                print(f"Layer {k} MMD loss: {mmd_loss.item()}")
                 
                 # Log individual layer losses
                 log[f"mmd_loss_layer_{k}"] = mmd_loss.detach().clone()
                 
             except Exception as e:
                 print(f"Error processing layer {k}: {str(e)}")
+                import traceback
+                traceback.print_exc()
                 continue
         
         # Average the MMD loss across layers
@@ -208,6 +215,4 @@ class MMD(CrossEntropyLossMoE):
         log["total_mmd_loss"] = total_mmd_loss.detach().clone()
         
         return total_mmd_loss, log
-
-  
 
