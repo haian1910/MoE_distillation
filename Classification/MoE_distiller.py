@@ -124,20 +124,25 @@ class MoEDistilledBERT(nn.Module):
         self.dropout = bert_model.dropout
         
     def forward(self, input_ids, attention_mask=None, token_type_ids=None, 
-                return_moe_outputs=False, labels=None):
+            return_moe_outputs=True, output_hidden_states=True, 
+            return_dict=False, labels=None):
         """
         Args:
             input_ids: Input token ids
             attention_mask: Attention mask
             token_type_ids: Token type ids
             return_moe_outputs: Whether to return MoE intermediate outputs
+            output_hidden_states: Whether to return hidden states from all layers
+            return_dict: Whether to return a dict or tuple
             labels: Labels for computing loss (if needed)
         """
-        # Get BERT outputs
+        # Get BERT outputs with optional hidden states
         bert_outputs = self.bert.bert(
             input_ids=input_ids,
             attention_mask=attention_mask,
-            token_type_ids=token_type_ids
+            token_type_ids=token_type_ids,
+            output_hidden_states=output_hidden_states,  # Pass this parameter
+            return_dict=True  # Always use dict for easier handling
         )
         
         # Get [CLS] token representation
@@ -158,22 +163,49 @@ class MoEDistilledBERT(nn.Module):
             loss_fct = nn.CrossEntropyLoss()
             loss = loss_fct(classification_logits.view(-1, self.config.num_labels), labels.view(-1))
         
-        if return_moe_outputs:
-            return {
+        # Prepare output based on return_dict and return_moe_outputs
+        if return_dict or True:  # Always return dict for consistency
+            output = {
                 'loss': loss,
                 'logits': classification_logits,
-                'expert_outputs': expert_outputs,
-                'gating_weights': gating_weights,
-                'moe_final_output': moe_final_output,
-                'cls_representation': cls_output,
-                'hidden_states': bert_outputs.last_hidden_state,
-                'pooler_output': cls_output
+                'pooler_output': cls_output,
+                'last_hidden_state': bert_outputs.last_hidden_state,
             }
+            
+            # Add hidden states if requested
+            if output_hidden_states:
+                output['hidden_states'] = bert_outputs.hidden_states
+                print(f"DEBUG: Added hidden_states with {len(bert_outputs.hidden_states)} layers")
+            
+            # Add MoE outputs if requested
+            if return_moe_outputs:
+                output.update({
+                    'expert_outputs': expert_outputs,
+                    'gating_weights': gating_weights,
+                    'moe_final_output': moe_final_output,
+                    'cls_representation': cls_output,
+                })
+            
+            return output
         else:
-            if loss is not None:
-                return {'loss': loss, 'logits': classification_logits}
+            # Legacy tuple return format
+            if return_moe_outputs:
+                return {
+                    'loss': loss,
+                    'logits': classification_logits,
+                    'expert_outputs': expert_outputs,
+                    'gating_weights': gating_weights,
+                    'moe_final_output': moe_final_output,
+                    'cls_representation': cls_output,
+                    'hidden_states': bert_outputs.hidden_states if output_hidden_states else None,
+                    'pooler_output': cls_output
+                }
             else:
-                return classification_logits
+                if loss is not None:
+                    return {'loss': loss, 'logits': classification_logits}
+                else:
+                    return classification_logits
+    
     
     def save_pretrained(self, save_directory, safe_serialization=True, **kwargs):
         """
@@ -791,3 +823,4 @@ class Distiller(nn.Module):
             loss_denom,
         )
         return loss, logging_output
+    
