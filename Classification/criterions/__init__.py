@@ -12,7 +12,8 @@ from .rank_cka import RANK_CKA
 from .min_cka import MIN_CKA
 from .cross_entropy_loss_moe import CrossEntropyLossMoE
 from .moe import MOE
-
+from .mmd import MMD
+from .mmd_moe import MMD_MOE
 criterion_list = {
     "cross_entropy": CrossEntropyLoss,
     "various_divergence": VariousDivergence,
@@ -28,7 +29,9 @@ criterion_list = {
     "rank_cka": RANK_CKA,
     "min_cka": MIN_CKA,
     "moe": MOE,
-    "ross_entropy_loss_moe": CrossEntropyLossMoE
+    "ross_entropy_loss_moe": CrossEntropyLossMoE,
+    "mmd": MMD,
+    "mmd_moe": MMD_MOE
 }
 
 def build_criterion(args):
