@@ -248,10 +248,17 @@ def evaluate(args, tokenizer, student_model, dataset, split, device):
                 attention_mask=input_batch["attention_mask"],
                 token_type_ids=input_batch.get("token_type_ids", None)
             )
+            if isinstance(outputs, dict) and 'logits' in outputs:
+                logits = outputs['logits']
+            elif isinstance(outputs, torch.Tensor):
+                # If outputs is a tensor, assume it's the logits directly
+                # This might be needed if the model doesn't return a dict in some cases
+                logits = outputs
+            else:
+                raise TypeError("Model outputs must be a dictionary with 'logits' or a tensor")
             # Calculate loss manually for MoEDistilledBERT
             loss_fn = nn.CrossEntropyLoss()
-            loss = loss_fn(outputs, labels)
-            logits = outputs
+            loss = loss_fn(logits, labels)
         else:
             # This is regular model (like LLM2Vec) - pass all parameters
             outputs = student_model(
