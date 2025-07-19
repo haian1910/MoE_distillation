@@ -423,7 +423,7 @@ class MMD_MOE(CrossEntropyLossMoE):
         
         # Define the layers to process (adjust these based on your student model architecture)
         # For BERT-base, layers are typically 0-11, so using last few layers
-        student_layers_to_process = [9, 10]  # Can modify based on your needs
+        student_layers_to_process = [10, 11]  # Can modify based on your needs
 
         teacher_layer_num = len(teacher_hidden_states)
         student_layer_num = len(student_hidden_states)
