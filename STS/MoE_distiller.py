@@ -263,7 +263,8 @@ class MoEDistilledBERT(nn.Module):
         self.uses_token_type_ids = hasattr(self.config, "type_vocab_size") and self.config.type_vocab_size > 0
         
     def forward(self, input_ids, attention_mask=None, token_type_ids=None, position_ids=None,
-                return_moe_outputs=False, labels=None, **kwargs):
+            return_moe_outputs=True, labels=None, output_hidden_states=True, 
+            output_attentions=False, return_dict=True, **kwargs):
         """
         Args:
             input_ids: Input token ids
@@ -272,6 +273,9 @@ class MoEDistilledBERT(nn.Module):
             position_ids: Position ids
             return_moe_outputs: Whether to return MoE intermediate outputs
             labels: Labels for computing loss (if needed)
+            output_hidden_states: Whether to output hidden states
+            output_attentions: Whether to output attention weights
+            return_dict: Whether to return as dictionary
         """
         # Filter kwargs for BERT forward pass
         bert_kwargs = {}
@@ -280,13 +284,14 @@ class MoEDistilledBERT(nn.Module):
         if position_ids is not None:
             bert_kwargs["position_ids"] = position_ids
         
-        # Get BERT outputs
+        # Get BERT outputs - always request hidden states for MMD loss
         bert_outputs = self.bert(
             input_ids=input_ids,
             attention_mask=attention_mask,
-            output_hidden_states=True,
-            output_attentions=True,
-            **bert_kwargs
+            output_hidden_states=True,  # Always True for distillation
+            output_attentions=output_attentions or True,  # Always True for distillation
+            **bert_kwargs,
+            return_dict=True  # Ensure outputs are in dict format
         )
         
         # Get [CLS] token representation
@@ -298,7 +303,6 @@ class MoEDistilledBERT(nn.Module):
         # Pass through MoE layer
         expert_outputs, gating_weights, moe_final_output = self.moe_layer(cls_output)
         
-      
         # For STS, apply regressor to get similarity score
         scores = self.regressor(cls_output)
         # Ensure the predicted score is within a reasonable range (0-5)
@@ -309,7 +313,7 @@ class MoEDistilledBERT(nn.Module):
         if labels is not None:
             loss_fct = nn.MSELoss()
             loss = loss_fct(scores.view(-1), labels.view(-1))
-    
+
         # Create output structure
         class MoEModelOutput:
             def __init__(self, loss, logits, expert_outputs=None, gating_weights=None, 
@@ -325,21 +329,34 @@ class MoEDistilledBERT(nn.Module):
                 self.hidden_states = hidden_states
                 self.attentions = attentions
                 self.last_hidden_state = hidden_states[-1] if hidden_states else None
+                
+            # Make it accessible as a dictionary as well
+            def get(self, key, default=None):
+                return getattr(self, key, default)
+            
+            def __getitem__(self, key):
+                return getattr(self, key)
+            
+            def keys(self):
+                return ['loss', 'logits', 'scores', 'expert_outputs', 'gating_weights', 
+                    'moe_final_output', 'cls_representation', 'hidden_states', 'attentions']
         
-        if return_moe_outputs:
-            return MoEModelOutput(
-                loss=loss,
-                logits=logits,
-                scores=scores,
-                expert_outputs=expert_outputs,
-                gating_weights=gating_weights,
-                moe_final_output=moe_final_output,
-                cls_representation=cls_output,
-                hidden_states=bert_outputs.hidden_states,
-                attentions=bert_outputs.attentions
-            )
+        output = MoEModelOutput(
+            loss=loss,
+            logits=logits,
+            scores=scores,
+            expert_outputs=expert_outputs if return_moe_outputs else None,
+            gating_weights=gating_weights if return_moe_outputs else None,
+            moe_final_output=moe_final_output if return_moe_outputs else None,
+            cls_representation=cls_output if return_moe_outputs else None,
+            hidden_states=bert_outputs.hidden_states,
+            attentions=bert_outputs.attentions if output_attentions else None
+        )
+        
+        if return_dict:
+            return output
         elif loss is not None:
-            return MoEModelOutput(loss=loss, logits=logits, scores=scores)
+            return output  # Return the full output object for compatibility
         else:
             return logits
 
@@ -638,11 +655,11 @@ class Distiller(nn.Module):
 
         if self.args.peft is not None: #for LLM2Vec
             if self.args.peft == "lora":
-                config = AutoConfig.from_pretrained("McGill-NLP/LLM2Vec-Sheared-LLaMA-mntp", trust_remote_code=True)
+                config = AutoConfig.from_pretrained("McGill-NLP/LLM2Vec-Mistral-7B-Instruct-v2-mntp", trust_remote_code=True)
                 config.is_model_parallel = False
         
                 # lấy tokenizer
-                tokenizer = self.load_tokenizer("McGill-NLP/LLM2Vec-Sheared-LLaMA-mntp")
+                tokenizer = self.load_tokenizer("McGill-NLP/LLM2Vec-Mistral-7B-Instruct-v2-mntp")
                 
                 if hasattr(config, "n_embed"):
                     self.hidden_size = config.n_embed
@@ -653,7 +670,7 @@ class Distiller(nn.Module):
                 
                 
                 model = AutoModel.from_pretrained(
-                    "McGill-NLP/LLM2Vec-Sheared-LLaMA-mntp",
+                    "McGill-NLP/LLM2Vec-Mistral-7B-Instruct-v2-mntp",
                     config=config,
                     device_map=None,
                     torch_dtype=self.dtype,
@@ -664,12 +681,12 @@ class Distiller(nn.Module):
                     
                 model = PeftModel.from_pretrained(
                     model,
-                    "McGill-NLP/LLM2Vec-Sheared-LLaMA-mntp",
+                    "McGill-NLP/LLM2Vec-Mistral-7B-Instruct-v2-mntp",
                 )
                 model = model.merge_and_unload()  # This can take several minutes on cpu
 
                 model = PeftModel.from_pretrained(
-                    model, "McGill-NLP/LLM2Vec-Sheared-LLaMA-mntp-unsup-simcse"
+                    model, "McGill-NLP/LLM2Vec-Mistral-7B-Instruct-v2-mntp-unsup-simcse"
                 )
                 model = model.merge_and_unload() 
                 
@@ -719,7 +736,7 @@ class Distiller(nn.Module):
             )
             
             # Get teacher hidden size
-            teacher_hidden_size = 2048 # hidden dim của LLM2Vec teacher model
+            teacher_hidden_size = 4096 # hidden dim của LLM2Vec teacher model
             
             # Create MoE model
             model = MoEDistilledBERT(
@@ -752,11 +769,11 @@ class Distiller(nn.Module):
 
         # normal loading
         config = AutoConfig.from_pretrained(
-            "McGill-NLP/LLM2Vec-Sheared-LLaMA-mntp",
+            "McGill-NLP/LLM2Vec-Mistral-7B-Instruct-v2-mntp",
             trust_remote_code=True
         )
         config.is_model_parallel = False
-        tokenizer = self.load_tokenizer("McGill-NLP/LLM2Vec-Sheared-LLaMA-mntp")
+        tokenizer = self.load_tokenizer("McGill-NLP/LLM2Vec-Mistral-7B-Instruct-v2-mntp")
 
         if hasattr(config, "n_embed"):
             self.teacher_hidden_size = config.n_embed
@@ -764,7 +781,7 @@ class Distiller(nn.Module):
             self.teacher_hidden_size = config.hidden_size
 
         base_model = AutoModel.from_pretrained(
-            "McGill-NLP/LLM2Vec-Sheared-LLaMA-mntp",
+            "McGill-NLP/LLM2Vec-Mistral-7B-Instruct-v2-mntp",
             config=config,
             device_map=None,
             torch_dtype=self.dtype,
@@ -776,13 +793,13 @@ class Distiller(nn.Module):
 
         teacher_base_model = PeftModel.from_pretrained(
             base_model,
-            "McGill-NLP/LLM2Vec-Sheared-LLaMA-mntp",
+            "McGill-NLP/LLM2Vec-Mistral-7B-Instruct-v2-mntp",
         )    
 
         teacher_base_model = teacher_base_model.merge_and_unload()
 
         teacher_base_model = PeftModel.from_pretrained(
-            teacher_base_model, "McGill-NLP/LLM2Vec-Sheared-LLaMA-mntp-unsup-simcse"
+            teacher_base_model, "McGill-NLP/LLM2Vec-Mistral-7B-Instruct-v2-mntp-unsup-simcse"
         )
         teacher_base_model = teacher_base_model.merge_and_unload()
 
