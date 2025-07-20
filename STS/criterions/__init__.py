@@ -5,6 +5,7 @@ from .ot_pro import OT_PRO
 from .ot_pro_rmse_cka import OT_PRO_RMSE_CKA
 from .min_cka import MIN_CKA
 from .mmd import MMD
+from .mmd_moe import  MMD_MOE
 criterion_list = {
     "sts_loss": STSLoss,
     "dual_space_kd_with_cross_model_attention": DualSpaceKDWithCMA,
@@ -12,7 +13,8 @@ criterion_list = {
     "ot_pro": OT_PRO,
     "ot_pro_rmse_cka": OT_PRO_RMSE_CKA,
     "min_cka": MIN_CKA,
-    "mmd": MMD
+    "mmd": MMD,
+    "mmd_moe": MMD_MOE
 }
 
 def build_criterion(args):
