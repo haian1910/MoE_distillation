@@ -33,7 +33,6 @@ class MMD_MOE(MoE_STSLoss):
         super().__init__(args)
         self.kd_rate = args.kd_rate  # Ensure kd_rate is initialized
         # STS-specific parameters
-        self.kd_rate = args.kd_rate  # Knowledge distillation rate 
         
         # MoE-specific parameters
         self.moe_loss_weight = getattr(args, "moe_loss_weight", 0.1)
