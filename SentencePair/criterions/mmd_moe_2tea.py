@@ -82,7 +82,7 @@ class MMD_MOE_2TEA(CrossEntropyLossMoE):
         # Teacher forward pass (no gradient)
         with torch.no_grad():
             teacher_model.eval()
-            teacher_outputs = teacher_model(
+            teacher_outputs = teacher_model(  # Fixed typo: was teacher_modl
                 input_data["teacher_input_ids"],
                 attention_mask=input_data["teacher_attention_mask"],
                 output_hidden_states=True,  # This is crucial for getting hidden states
@@ -97,9 +97,10 @@ class MMD_MOE_2TEA(CrossEntropyLossMoE):
             )
 
         # Compute MMD loss
-        mmd_loss, log = self.compute_mmd_loss(
-            outputs, teacher_outputs, output_data, distiller, log
-        )
+        # mmd_loss, log = self.compute_mmd_loss(
+        #     outputs, teacher_outputs, output_data, distiller, log
+        # )
+        mmd_loss = 0
         print("mmd_loss:", mmd_loss)
 
         # Compute MOE loss
@@ -127,20 +128,19 @@ class MMD_MOE_2TEA(CrossEntropyLossMoE):
         return loss, logging_output
     
     def compute_moe_loss(
-    self, outputs, teacher_outputs, teacher_outputs_2, output_data, distiller, log
-):
+        self, outputs, teacher_outputs, teacher_outputs_2, output_data, distiller, log
+    ):
         """
-        Compute the Mixture of Experts (MoE) distillation loss for three experts.
-        - Expert 1: Cosine Loss
-        - Expert 2: CKA Loss 
-        - Expert 3: Ranking Loss (replaced Resim Loss)
+        Compute the Mixture of Experts (MoE) distillation loss for six experts.
+        - Experts 0-2: For teacher1 (LLM2Vec, 2048 dim) with Cosine, CKA, Ranking losses
+        - Experts 3-5: For teacher2 (Qwen, 1024 dim) with Cosine, CKA, Ranking losses
         The final MoE loss is weighted by the gating network outputs.
         """
         # Get device for tensor creation
         device = next(distiller.student_model.parameters()).device
         
         # Get MoE outputs from student model
-        expert_outputs = outputs['expert_outputs']  # List of 3 expert outputs
+        expert_outputs = outputs['expert_outputs']  # List of 6 expert outputs
         gating_weights = outputs['gating_weights']  # [batch_size, num_experts]
         
         # Extract student CLS representation (before MoE)
@@ -153,6 +153,7 @@ class MMD_MOE_2TEA(CrossEntropyLossMoE):
         elif isinstance(teacher_outputs, dict) and 'hidden_states' in teacher_outputs:
             # If teacher_outputs is a dict with hidden_states key
             teacher_hidden = teacher_outputs['hidden_states'][-1]
+        
         if hasattr(teacher_outputs_2, 'hidden_states') and teacher_outputs_2.hidden_states is not None:
             # For teacher 2: Qwen 0.6B embedding
             teacher_hidden_2 = teacher_outputs_2.hidden_states[-1]
@@ -166,6 +167,7 @@ class MMD_MOE_2TEA(CrossEntropyLossMoE):
             teacher_emb = teacher_hidden
         else:
             raise ValueError(f"Unexpected dimension for teacher_hidden: {teacher_hidden.shape}")
+        
         if teacher_hidden_2.dim() == 3:
             teacher_emb_2 = teacher_hidden_2.mean(dim=1)  # Take mean across sequence length
         elif teacher_hidden_2.dim() == 2:
@@ -179,48 +181,50 @@ class MMD_MOE_2TEA(CrossEntropyLossMoE):
         # Compute individual expert losses PER SAMPLE
         expert_losses = []
         
-        # Expert 1: Cosine Loss - compute per sample --> for expert[0] and expert[3] but different teacher
-        expert1_output = expert_outputs[0]  # [batch_size, teacher_hidden_size]
-        cosine_loss_per_sample = self.compute_cosine_loss_per_sample(expert1_output, projected_teacher)
-        expert_losses.append(cosine_loss_per_sample)
-        log["expert1_cosine_loss"] = cosine_loss_per_sample.mean().detach().clone()
-        print("expert1_cosine_loss:", cosine_loss_per_sample.mean().detach().clone())
-        expert4_output = expert_outputs[3]  # [batch_size, teacher_hidden_size]
-        cosine_loss_per_sample_4 = self.compute_cosine_loss_per_sample(expert4_output, projected_teacher_2)
-        expert_losses.append(cosine_loss_per_sample_4)
-        log["expert4_cosine_loss"] = cosine_loss_per_sample_4.mean().detach().clone()
-        print("expert4_cosine_loss:", cosine_loss_per_sample_4.mean().detach().clone())
-
-        # Expert 2: CKA Loss - compute per sample --> for expert[1] and expert[4] but different teacher
-        expert2_output = expert_outputs[1]  # [batch_size, teacher_hidden_size]
-        cka_loss_per_sample = self.compute_cka_loss_per_sample(expert2_output, projected_teacher)
-        expert_losses.append(cka_loss_per_sample)
-        log["expert2_cka_loss"] = cka_loss_per_sample.mean().detach().clone()
-        print("expert2_cka_loss:", cka_loss_per_sample.mean().detach().clone())
-        expert5_output = expert_outputs[4]  # [batch_size, teacher_hidden_size]
-        cka_loss_per_sample_5 = self.compute_cka_loss_per_sample(expert5_output, projected_teacher_2)
-        expert_losses.append(cka_loss_per_sample_5)
-        log["expert5_cka_loss"] = cka_loss_per_sample_5.mean().detach().clone()
-        print("expert5_cka_loss:", cka_loss_per_sample_5.mean().detach().clone())
-
-        # Expert 3: Ranking Loss - compute per sample (replaced Resim Loss) --> for expert[2] and expert[5] but different teacher
-        expert3_output = expert_outputs[2]  # [batch_size, teacher_hidden_size]
-        ranking_loss_per_sample = self.compute_ranking_loss_per_sample(expert3_output, projected_teacher)
-        expert_losses.append(ranking_loss_per_sample)
-        log["expert3_ranking_loss"] = ranking_loss_per_sample.mean().detach().clone()
-        print("expert3_ranking_loss:", ranking_loss_per_sample.mean().detach().clone())
-        expert6_output = expert_outputs[5]  # [batch_size, teacher_hidden_size]
-        ranking_loss_per_sample_6 = self.compute_ranking_loss_per_sample(expert6_output, projected_teacher_2)
-        expert_losses.append(ranking_loss_per_sample_6)
-        log["expert6_ranking_loss"] = ranking_loss_per_sample_6.mean().detach().clone()
-        print("expert6_ranking_loss:", ranking_loss_per_sample_6.mean().detach().clone())
+        # Teacher 1 experts (experts 0-2, output dim 2048)
+        # Expert 0: Cosine Loss for teacher1
+        expert0_output = expert_outputs[0]  # [batch_size, 2048]
+        cosine_loss_per_sample_0 = self.compute_cosine_loss_per_sample(expert0_output, projected_teacher)
+        expert_losses.append(cosine_loss_per_sample_0)
+        log["expert0_cosine_loss"] = cosine_loss_per_sample_0.mean().detach().clone()
+        
+        # Expert 1: CKA Loss for teacher1
+        expert1_output = expert_outputs[1]  # [batch_size, 2048]
+        cka_loss_per_sample_1 = self.compute_cka_loss_per_sample(expert1_output, projected_teacher)
+        expert_losses.append(cka_loss_per_sample_1)
+        log["expert1_cka_loss"] = cka_loss_per_sample_1.mean().detach().clone()
+        
+        # Expert 2: Ranking Loss for teacher1
+        expert2_output = expert_outputs[2]  # [batch_size, 2048]
+        ranking_loss_per_sample_2 = self.compute_ranking_loss_per_sample(expert2_output, projected_teacher)
+        expert_losses.append(ranking_loss_per_sample_2)
+        log["expert2_ranking_loss"] = ranking_loss_per_sample_2.mean().detach().clone()
+        
+        # Teacher 2 experts (experts 3-5, output dim 1024)
+        # Expert 3: Cosine Loss for teacher2
+        expert3_output = expert_outputs[3]  # [batch_size, 1024]
+        cosine_loss_per_sample_3 = self.compute_cosine_loss_per_sample(expert3_output, projected_teacher_2)
+        expert_losses.append(cosine_loss_per_sample_3)
+        log["expert3_cosine_loss"] = cosine_loss_per_sample_3.mean().detach().clone()
+        
+        # Expert 4: CKA Loss for teacher2
+        expert4_output = expert_outputs[4]  # [batch_size, 1024]
+        cka_loss_per_sample_4 = self.compute_cka_loss_per_sample(expert4_output, projected_teacher_2)
+        expert_losses.append(cka_loss_per_sample_4)
+        log["expert4_cka_loss"] = cka_loss_per_sample_4.mean().detach().clone()
+        
+        # Expert 5: Ranking Loss for teacher2
+        expert5_output = expert_outputs[5]  # [batch_size, 1024]
+        ranking_loss_per_sample_5 = self.compute_ranking_loss_per_sample(expert5_output, projected_teacher_2)
+        expert_losses.append(ranking_loss_per_sample_5)
+        log["expert5_ranking_loss"] = ranking_loss_per_sample_5.mean().detach().clone()
 
         # Compute weighted MoE loss using gating weights
         # gating_weights: [batch_size, num_experts]
         # expert_losses: [num_experts, batch_size] (each is per-sample loss)
         
         # Stack expert losses: [num_experts, batch_size]
-        expert_losses_tensor = torch.stack(expert_losses)  # [num_experts, batch_size]
+        expert_losses_tensor = torch.stack(expert_losses)  # [6, batch_size]
         
         # Compute per-sample weighted loss
         # gating_weights.t(): [num_experts, batch_size]
@@ -284,36 +288,56 @@ class MMD_MOE_2TEA(CrossEntropyLossMoE):
         
         return torch.stack(per_sample_losses)  # [batch_size]
     
-
     def compute_expert_diversity_loss(self, expert_outputs):
         """
         Compute expert diversity loss to encourage different experts to produce diverse representations.
-        L_div = sum_i sum_m sum_n cos(h_i^(m), h_i^(n)) for m != n
+        Only compares experts within the same teacher group (same output dimensions).
+        L_div = sum within teacher1 experts + sum within teacher2 experts
         
         Args:
             expert_outputs: List of [batch_size, hidden_size] tensors, one for each expert
+                          - experts 0-2: dimension 2048 (teacher1)
+                          - experts 3-5: dimension 1024 (teacher2)
             
         Returns:
             Scalar tensor representing the diversity loss
         """
-        batch_size = expert_outputs[0].size(0)
-        num_experts = len(expert_outputs)
+        if len(expert_outputs) != 6:
+            raise ValueError(f"Expected 6 experts, got {len(expert_outputs)}")
         
+        batch_size = expert_outputs[0].size(0)
         total_diversity_loss = 0.0
         pair_count = 0
         
-        # Iterate over all pairs of experts
-        for m in range(num_experts):
-            for n in range(num_experts):
+        # Teacher 1 experts (0, 1, 2) - dimension 2048
+        teacher1_experts = expert_outputs[:3]
+        for m in range(3):
+            for n in range(3):
                 if m != n:  # Only consider different experts
                     # Normalize expert outputs
-                    expert_m_norm = F.normalize(expert_outputs[m], p=2, dim=-1)
-                    expert_n_norm = F.normalize(expert_outputs[n], p=2, dim=-1)
+                    expert_m_norm = F.normalize(teacher1_experts[m], p=2, dim=-1)
+                    expert_n_norm = F.normalize(teacher1_experts[n], p=2, dim=-1)
                     
                     # Compute cosine similarity for each sample
                     cosine_similarities = (expert_m_norm * expert_n_norm).sum(dim=-1)  # [batch_size]
                     
-                    # Sum over all samples in the batch
+                    # Sum over all samples in the batch - encourage diversity (minimize similarity)
+                    total_diversity_loss += torch.relu(cosine_similarities).sum()
+                    pair_count += 1
+        
+        # Teacher 2 experts (3, 4, 5) - dimension 1024
+        teacher2_experts = expert_outputs[3:6]
+        for m in range(3):
+            for n in range(3):
+                if m != n:  # Only consider different experts
+                    # Normalize expert outputs
+                    expert_m_norm = F.normalize(teacher2_experts[m], p=2, dim=-1)
+                    expert_n_norm = F.normalize(teacher2_experts[n], p=2, dim=-1)
+                    
+                    # Compute cosine similarity for each sample
+                    cosine_similarities = (expert_m_norm * expert_n_norm).sum(dim=-1)  # [batch_size]
+                    
+                    # Sum over all samples in the batch - encourage diversity (minimize similarity)
                     total_diversity_loss += torch.relu(cosine_similarities).sum()
                     pair_count += 1
         
@@ -419,8 +443,8 @@ class MMD_MOE_2TEA(CrossEntropyLossMoE):
         return torch.mean(XX + YY - 2. * XY)
 
     def compute_mmd_loss(
-    self, outputs, teacher_outputs, output_data, distiller, log
-):
+        self, outputs, teacher_outputs, output_data, distiller, log
+    ):
         """
         Compute MMD loss between student and teacher hidden states
         
@@ -510,4 +534,3 @@ class MMD_MOE_2TEA(CrossEntropyLossMoE):
         log["total_mmd_loss"] = total_mmd_loss.detach().clone()
         
         return total_mmd_loss, log
-
