@@ -15,22 +15,22 @@ DISTRIBUTED_ARGS="--nproc_per_node $GPUS_PER_NODE \
                   --master_port $MASTER_PORT"
 
 # model
-BASE_PATH=/mnt/bn/magellan-product-audit/tu.vu/matrixone/Dynamic_mapping_Distillation
+BASE_PATH=/content/MoE_distillation
 CKPT_NAME="bert"
 CKPT_PATH="${BASE_PATH}/model_hub/${CKPT_NAME}"
 TEACHER_MODEL_NAME="LLM2Vec"
-TEACHER_MODEL_PATH="checkpoint"
-TEACHER_MODEL_2_PATH = "qwenn"
+TEACHER_MODEL_PATH="/content/drive/MyDrive/2MMath/data_distillation/checkpoint_for_test/Llama_sft_scitail" # checkpoint LLM2Vec Mistral 7B
+TEACHER_MODEL_2_PATH = "/content/drive/MyDrive/2MMath/data_distillation/checkpoint_for_test/Qwen_0.6B_embedding_scitail" #checkpoint Qwen 0.6B embedding
 # data
-DATA_DIR="${BASE_PATH}/data/scitail/"
+DATA_DIR="/content/drive/MyDrive/2MMath/data_distillation/data_test/scitail"
 NUM_LABELS=2
 # task
-TASK="mmd_moe_2te"
+TASK="mmd_moe_tea"
 # hp
-BATCH_SIZE=64
+BATCH_SIZE=16
 LR=0.00001
 GRAD_ACC=1
-EVAL_BATCH_SIZE=64
+EVAL_BATCH_SIZE=16
 EPOCH=5
 KD_RATE=0.5
 KD_TEMP=2.0
@@ -41,7 +41,7 @@ PROJECTOR_CONFIG_PATH="${BASE_PATH}/configs/projector_config.json"
 PROJECTOR_LR=0.001
 # runtime
 PRECISION="bf16"
-CRITERION="mmd_moe_2tea"
+CRITERION="mmd_moe_tea"
 KD_OBJ="forward_kl"  # [forward_kl, reverse_kl, js_divergence, skewed_forward_kl, skewed_reverse_kl, adaptive_kl]
 CONFIG="${KD_OBJ}"
 SETTING=criterion=${CRITERION}__${CONFIG}__teacher=${KD_RATE}__kd^temp=${KD_TEMP}__tea^temp=${TEA_TEMP}__epoch=${EPOCH}__bsz=${BATCH_SIZE}x${GRAD_ACC}x${GPUS_PER_NODE}=$((BATCH_SIZE * GRAD_ACC * GPUS_PER_NODE * NNODES))__lr=${LR}
@@ -107,7 +107,7 @@ export NCCL_DEBUG=""
 export WANDB_DISABLED=True
 export TF_CPP_MIN_LOG_LEVEL=3
 export PYTHONPATH=${BASE_PATH}
-CMD="torchrun ${DISTRIBUTED_ARGS} ${BASE_PATH}/SentencePair/MoE_distillation.py ${OPTS}"
+CMD="torchrun ${DISTRIBUTED_ARGS} ${BASE_PATH}/SentencePair/MoE_distillation_2teacher.py ${OPTS}"
 
 echo ${CMD}
 # $CMD
