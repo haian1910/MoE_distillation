@@ -25,7 +25,7 @@ TEACHER_MODEL_2_PATH = "/content/drive/MyDrive/2MMath/data_distillation/checkpoi
 DATA_DIR="/content/drive/MyDrive/2MMath/data_distillation/data_test/scitail"
 NUM_LABELS=2
 # task
-TASK="mmd_moe_tea"
+TASK="mmd_moe_2tea"
 # hp
 BATCH_SIZE=16
 LR=0.00001
@@ -41,7 +41,7 @@ PROJECTOR_CONFIG_PATH="${BASE_PATH}/configs/projector_config.json"
 PROJECTOR_LR=0.001
 # runtime
 PRECISION="bf16"
-CRITERION="mmd_moe_tea"
+CRITERION="mmd_moe_2tea"
 KD_OBJ="forward_kl"  # [forward_kl, reverse_kl, js_divergence, skewed_forward_kl, skewed_reverse_kl, adaptive_kl]
 CONFIG="${KD_OBJ}"
 SETTING=criterion=${CRITERION}__${CONFIG}__teacher=${KD_RATE}__kd^temp=${KD_TEMP}__tea^temp=${TEA_TEMP}__epoch=${EPOCH}__bsz=${BATCH_SIZE}x${GRAD_ACC}x${GPUS_PER_NODE}=$((BATCH_SIZE * GRAD_ACC * GPUS_PER_NODE * NNODES))__lr=${LR}
