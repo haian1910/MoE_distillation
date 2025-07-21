@@ -24,7 +24,7 @@ import os
 
 
 class ExpertNetwork(nn.Module):
-    """Individual expert network for MoE"""
+    """Individual expert network for MoE with flexible output dimension"""
     def __init__(self, input_dim, hidden_dim, output_dim, dropout=0.1):
         super(ExpertNetwork, self).__init__()
         self.expert = nn.Sequential(
@@ -55,18 +55,32 @@ class GatingNetwork(nn.Module):
         return weights
 
 class MoELayer(nn.Module):
-    """Mixture of Experts layer"""
-    def __init__(self, input_dim, output_dim, num_experts=6, expert_hidden_dim=128):
+    """Mixture of Experts layer with heterogeneous expert architectures"""
+    def __init__(self, input_dim, teacher1_dim=4096, teacher2_dim=1024, num_experts=6, expert_hidden_dim=128):
         super(MoELayer, self).__init__()
         self.num_experts = num_experts
         self.input_dim = input_dim
-        self.output_dim = output_dim
+        self.teacher1_dim = teacher1_dim
+        self.teacher2_dim = teacher2_dim
         
-        # Create expert networks
-        self.experts = nn.ModuleList([
-            ExpertNetwork(input_dim, expert_hidden_dim, output_dim)
-            for _ in range(num_experts)
-        ])
+        # Validate expert configuration
+        if num_experts % 2 != 0:
+            raise ValueError(f"num_experts must be even to split between two teachers, got {num_experts}")
+        
+        self.num_experts_per_teacher = num_experts // 2
+        
+        # Create expert networks - first half for teacher1, second half for teacher2
+        self.experts = nn.ModuleList()
+        
+        # First half: experts for teacher1 (e.g., LLM2Vec with 4096 dim)
+        for _ in range(self.num_experts_per_teacher):
+            expert = ExpertNetwork(input_dim, expert_hidden_dim, teacher1_dim)
+            self.experts.append(expert)
+        
+        # Second half: experts for teacher2 (e.g., Qwen with 1024 dim)
+        for _ in range(self.num_experts_per_teacher):
+            expert = ExpertNetwork(input_dim, expert_hidden_dim, teacher2_dim)
+            self.experts.append(expert)
         
         # Gating network
         self.gating_network = GatingNetwork(input_dim, num_experts)
@@ -76,9 +90,10 @@ class MoELayer(nn.Module):
         Args:
             x: [CLS] token representation [batch_size, input_dim]
         Returns:
-            expert_outputs: List of outputs from each expert [batch_size, output_dim]
+            expert_outputs: List of outputs from each expert with varying dimensions
             gating_weights: Gating weights [batch_size, num_experts]
-            final_output: Weighted combination of expert outputs [batch_size, output_dim]
+            teacher1_output: Weighted combination for teacher1 experts [batch_size, teacher1_dim]
+            teacher2_output: Weighted combination for teacher2 experts [batch_size, teacher2_dim]
         """
         batch_size = x.size(0)
         
@@ -87,32 +102,64 @@ class MoELayer(nn.Module):
         
         # Get outputs from all experts
         expert_outputs = []
-        for expert in self.experts:
+        teacher1_outputs = []
+        teacher2_outputs = []
+        
+        for i, expert in enumerate(self.experts):
             expert_output = expert(x)  # [batch_size, output_dim]
             expert_outputs.append(expert_output)
+            
+            if i < self.num_experts_per_teacher:
+                # First half: teacher1 experts
+                teacher1_outputs.append(expert_output)
+            else:
+                # Second half: teacher2 experts
+                teacher2_outputs.append(expert_output)
         
-        # Stack expert outputs for easier computation
-        expert_outputs_stacked = torch.stack(expert_outputs, dim=1)  # [batch_size, num_experts, output_dim]
+        # Stack outputs by teacher
+        teacher1_outputs_stacked = torch.stack(teacher1_outputs, dim=1)  # [batch_size, num_experts_per_teacher, teacher1_dim]
+        teacher2_outputs_stacked = torch.stack(teacher2_outputs, dim=1)  # [batch_size, num_experts_per_teacher, teacher2_dim]
         
-        # Compute weighted combination
-        gating_weights_expanded = gating_weights.unsqueeze(-1)  # [batch_size, num_experts, 1]
-        final_output = torch.sum(expert_outputs_stacked * gating_weights_expanded, dim=1)  # [batch_size, output_dim]
+        # Split gating weights by teacher
+        teacher1_weights = gating_weights[:, :self.num_experts_per_teacher]  # [batch_size, num_experts_per_teacher]
+        teacher2_weights = gating_weights[:, self.num_experts_per_teacher:]  # [batch_size, num_experts_per_teacher]
         
-        return expert_outputs, gating_weights, final_output
+        # Normalize weights within each teacher group
+        teacher1_weights_norm = F.softmax(teacher1_weights, dim=-1)
+        teacher2_weights_norm = F.softmax(teacher2_weights, dim=-1)
+        
+        # Compute weighted combinations for each teacher
+        teacher1_weights_expanded = teacher1_weights_norm.unsqueeze(-1)  # [batch_size, num_experts_per_teacher, 1]
+        teacher2_weights_expanded = teacher2_weights_norm.unsqueeze(-1)  # [batch_size, num_experts_per_teacher, 1]
+        
+        teacher1_final_output = torch.sum(teacher1_outputs_stacked * teacher1_weights_expanded, dim=1)  # [batch_size, teacher1_dim]
+        teacher2_final_output = torch.sum(teacher2_outputs_stacked * teacher2_weights_expanded, dim=1)  # [batch_size, teacher2_dim]
+        
+        return {
+            'expert_outputs': expert_outputs,
+            'gating_weights': gating_weights,
+            'teacher1_output': teacher1_final_output,
+            'teacher2_output': teacher2_final_output,
+            'teacher1_weights': teacher1_weights_norm,
+            'teacher2_weights': teacher2_weights_norm
+        }
 
 class MoEDistilledBERT(nn.Module):
-    """BERT with MoE layer for knowledge distillation"""
-    def __init__(self, bert_model, teacher_hidden_size, num_experts=6, expert_hidden_dim=128):
+    """BERT with MoE layer for knowledge distillation from two teachers"""
+    def __init__(self, bert_model, teacher1_hidden_size=4096, teacher2_hidden_size=1024, 
+                 num_experts=6, expert_hidden_dim=128):
         super(MoEDistilledBERT, self).__init__()
         self.bert = bert_model
         self.bert_hidden_size = bert_model.config.hidden_size
-        self.teacher_hidden_size = teacher_hidden_size
+        self.teacher1_hidden_size = teacher1_hidden_size
+        self.teacher2_hidden_size = teacher2_hidden_size
         self.config = bert_model.config  # Make sure config is accessible
         
-        # MoE layer
+        # MoE layer with heterogeneous experts
         self.moe_layer = MoELayer(
             input_dim=self.bert_hidden_size,
-            output_dim=teacher_hidden_size,  # Align with teacher output dimension
+            teacher1_dim=teacher1_hidden_size,
+            teacher2_dim=teacher2_hidden_size,
             num_experts=num_experts,
             expert_hidden_dim=expert_hidden_dim
         )
@@ -141,8 +188,8 @@ class MoEDistilledBERT(nn.Module):
             input_ids=input_ids,
             attention_mask=attention_mask,
             token_type_ids=token_type_ids,
-            output_hidden_states=output_hidden_states,  # Pass this parameter
-            return_dict=True  # Always use dict for easier handling
+            output_hidden_states=output_hidden_states,
+            return_dict=True
         )
         
         # Get [CLS] token representation
@@ -152,7 +199,7 @@ class MoEDistilledBERT(nn.Module):
         cls_output = self.dropout(cls_output)
         
         # Pass through MoE layer
-        expert_outputs, gating_weights, moe_final_output = self.moe_layer(cls_output)
+        moe_outputs = self.moe_layer(cls_output)
         
         # Get final classification logits using original classifier
         classification_logits = self.classifier(cls_output)
@@ -180,9 +227,12 @@ class MoEDistilledBERT(nn.Module):
             # Add MoE outputs if requested
             if return_moe_outputs:
                 output.update({
-                    'expert_outputs': expert_outputs,
-                    'gating_weights': gating_weights,
-                    'moe_final_output': moe_final_output,
+                    'expert_outputs': moe_outputs['expert_outputs'],
+                    'gating_weights': moe_outputs['gating_weights'],
+                    'teacher1_output': moe_outputs['teacher1_output'],
+                    'teacher2_output': moe_outputs['teacher2_output'],
+                    'teacher1_weights': moe_outputs['teacher1_weights'],
+                    'teacher2_weights': moe_outputs['teacher2_weights'],
                     'cls_representation': cls_output,
                 })
             
@@ -193,9 +243,12 @@ class MoEDistilledBERT(nn.Module):
                 return {
                     'loss': loss,
                     'logits': classification_logits,
-                    'expert_outputs': expert_outputs,
-                    'gating_weights': gating_weights,
-                    'moe_final_output': moe_final_output,
+                    'expert_outputs': moe_outputs['expert_outputs'],
+                    'gating_weights': moe_outputs['gating_weights'],
+                    'teacher1_output': moe_outputs['teacher1_output'],
+                    'teacher2_output': moe_outputs['teacher2_output'],
+                    'teacher1_weights': moe_outputs['teacher1_weights'],
+                    'teacher2_weights': moe_outputs['teacher2_weights'],
                     'cls_representation': cls_output,
                     'hidden_states': bert_outputs.hidden_states if output_hidden_states else None,
                     'pooler_output': cls_output
@@ -205,7 +258,6 @@ class MoEDistilledBERT(nn.Module):
                     return {'loss': loss, 'logits': classification_logits}
                 else:
                     return classification_logits
-    
     
     def save_pretrained(self, save_directory, safe_serialization=True, **kwargs):
         """
@@ -225,8 +277,10 @@ class MoEDistilledBERT(nn.Module):
         # Save MoE specific config
         moe_config = {
             'num_experts': self.moe_layer.num_experts,
+            'num_experts_per_teacher': self.moe_layer.num_experts_per_teacher,
             'expert_hidden_dim': self.moe_layer.experts[0].expert[0].out_features,
-            'teacher_hidden_size': self.teacher_hidden_size,
+            'teacher1_hidden_size': self.teacher1_hidden_size,
+            'teacher2_hidden_size': self.teacher2_hidden_size,
             'bert_hidden_size': self.bert_hidden_size
         }
         moe_config_path = os.path.join(save_directory, "moe_config.json")
@@ -261,7 +315,8 @@ class MoEDistilledBERT(nn.Module):
         # Create MoE model
         model = cls(
             bert_model=bert_model,
-            teacher_hidden_size=moe_config['teacher_hidden_size'],
+            teacher1_hidden_size=moe_config['teacher1_hidden_size'],
+            teacher2_hidden_size=moe_config['teacher2_hidden_size'],
             num_experts=moe_config['num_experts'],
             expert_hidden_dim=moe_config['expert_hidden_dim']
         )
@@ -323,7 +378,7 @@ class Distiller(nn.Module):
             self.set_and_load_existing_projectors()
             log_rank(f"projector structure: {self.projectors}")
 
-        if self.args.teacher_model_path_2 is not None:
+        if self.args.teacher_model_2_path is not None:
             self.teacher_model_2, self.teacher_tokenizers_2 = self.load_teacher_model_2()
         else:
             self.teacher_model_2, self.teacher_tokenizers_2 = None, {}
@@ -355,10 +410,14 @@ class Distiller(nn.Module):
         group.add_argument("--student-to-teacher-id-mapping", type=str, default=None,
                            help='path for the vocab alignment file (id, student-to-teacher)')
         # MoE specific arguments
-        group.add_argument("--num-experts", type=int, default=3,
-                           help='number of experts in MoE layer')
+        group.add_argument("--num-experts", type=int, default=6,
+                           help='number of experts in MoE layer (must be even)')
         group.add_argument("--expert-hidden-dim", type=int, default=128,
                            help='hidden dimension for expert networks')
+        group.add_argument("--teacher1-hidden-dim", type=int, default=4096,
+                           help='hidden dimension for teacher1 (LLM2Vec)')
+        group.add_argument("--teacher2-hidden-dim", type=int, default=1024,
+                           help='hidden dimension for teacher2 (Qwen)')
         group.add_argument("--moe-lr", type=float, default=0.001,
                            help='learning rate for MoE components')
         return parser
@@ -373,11 +432,12 @@ class Distiller(nn.Module):
         name_dict = {
             "s": self.hidden_size, 
             "t": self.teacher_hidden_size,
+            "t1": getattr(self.args, 'teacher1_hidden_dim', 4096),  # Teacher1 hidden size
+            "t2": getattr(self.args, 'teacher2_hidden_dim', 1024),  # Teacher2 hidden size
             "relu": nn.ReLU()
         }
         # auto-parse projector config strings to construct nn.Module
         for projector_name in projector_config:
-            # for d in projector_config[loc]:
             if projector_config[projector_name]["enabled"]:
                 self.projectors[projector_name] = nn.Sequential()
 
@@ -385,7 +445,7 @@ class Distiller(nn.Module):
                 for i in range(len(structure)):
                     if structure[i] not in ["relu"]:
                         coef = 1 if not len(structure[i][:-1]) else int(structure[i][:-1])
-                        base_size = name_dict[structure[i][-1]]
+                        base_size = name_dict[structure[i][-1:]] if structure[i][-1:] in name_dict else name_dict[structure[i][-2:]]
                         structure[i] = coef * base_size
 
                 for i in range(len(structure) - 1):
@@ -442,11 +502,11 @@ class Distiller(nn.Module):
 
         if self.args.peft is not None: #for LLM2Vec
             if self.args.peft == "lora":
-                config = AutoConfig.from_pretrained("McGill-NLP/LLM2Vec-Sheared-LLaMA-mntp", trust_remote_code=True)
+                config = AutoConfig.from_pretrained("McGill-NLP/LLM2Vec-Mistral-7B-Instruct-v2-mntp", trust_remote_code=True)
                 config.is_model_parallel = False
         
                 # lấy tokenizer
-                tokenizer = self.load_tokenizer("McGill-NLP/LLM2Vec-Sheared-LLaMA-mntp")
+                tokenizer = self.load_tokenizer("McGill-NLP/LLM2Vec-Mistral-7B-Instruct-v2-mntp")
                 
                 if hasattr(config, "n_embed"):
                     self.hidden_size = config.n_embed
@@ -455,7 +515,7 @@ class Distiller(nn.Module):
         
                 config.num_labels = self.args.num_labels
                 model = AutoModelForSequenceClassification.from_pretrained(
-                    "McGill-NLP/LLM2Vec-Sheared-LLaMA-mntp",
+                    "McGill-NLP/LLM2Vec-Mistral-7B-Instruct-v2-mntp",
                     config=config,
                     device_map=None,
                     torch_dtype=self.dtype,
@@ -466,12 +526,12 @@ class Distiller(nn.Module):
                     
                 model = PeftModel.from_pretrained(
                     model,
-                    "McGill-NLP/LLM2Vec-Sheared-LLaMA-mntp",
+                    "McGill-NLP/LLM2Vec-Mistral-7B-Instruct-v2-mntp",
                 )
                 model = model.merge_and_unload()  # This can take several minutes on cpu
 
                 model = PeftModel.from_pretrained(
-                    model, "McGill-NLP/LLM2Vec-Sheared-LLaMA-mntp-unsup-simcse"
+                    model, "McGill-NLP/LLM2Vec-Mistral-7B-Instruct-v2-mntp-unsup-simcse"
                 )
                 model = model.merge_and_unload() 
                 # Apply new LoRA adapter for fine-tuning
@@ -515,14 +575,14 @@ class Distiller(nn.Module):
                 trust_remote_code=True,
             )
             
-            # Wrap with MoE layer
-            # Get teacher hidden size if available
-            #teacher_hidden_size = getattr(self, 'teacher_hidden_size', self.hidden_size)
-            teacher_hidden_size = 2048 # hidden dim của LLM2Vec teacher model
+            # Wrap with MoE layer with heterogeneous experts
+            teacher1_hidden_size = getattr(self.args, 'teacher1_hidden_dim', 4096)  # LLM2Vec
+            teacher2_hidden_size = getattr(self.args, 'teacher2_hidden_dim', 1024)  # Qwen
             
             model = MoEDistilledBERT(
                 bert_model=bert_model,
-                teacher_hidden_size=teacher_hidden_size,
+                teacher1_hidden_size=teacher1_hidden_size,
+                teacher2_hidden_size=teacher2_hidden_size,
                 num_experts=getattr(self.args, 'num_experts', 6),
                 expert_hidden_dim=getattr(self.args, 'expert_hidden_dim', 128)
             )
@@ -535,16 +595,15 @@ class Distiller(nn.Module):
             model.gradient_checkpointing_enable()
 
         return model, tokenizer
-    
     def load_teacher_model(self):
         log_rank("Loading teacher model...")
         config = AutoConfig.from_pretrained(
-            "McGill-NLP/LLM2Vec-Sheared-LLaMA-mntp",
+            "McGill-NLP/LLM2Vec-Mistral-7B-Instruct-v2-mntp",
             trust_remote_code=True
         )
         config.is_model_parallel = False
 
-        tokenizer = self.load_tokenizer("McGill-NLP/LLM2Vec-Sheared-LLaMA-mntp")
+        tokenizer = self.load_tokenizer("McGill-NLP/LLM2Vec-Mistral-7B-Instruct-v2-mntp")
 
         if hasattr(config, "n_embed"):
             self.teacher_hidden_size = config.n_embed
@@ -553,7 +612,7 @@ class Distiller(nn.Module):
 
         config.num_labels = self.args.num_labels
         model = AutoModelForSequenceClassification.from_pretrained(
-            "McGill-NLP/LLM2Vec-Sheared-LLaMA-mntp",
+            "McGill-NLP/LLM2Vec-Mistral-7B-Instruct-v2-mntp",
             config=config,
             device_map=None,
             torch_dtype=self.dtype,
@@ -562,14 +621,14 @@ class Distiller(nn.Module):
         model.config.pad_token_id = 2
         teacher_model = PeftModel.from_pretrained(
             model,
-            "McGill-NLP/LLM2Vec-Sheared-LLaMA-mntp",
+            "McGill-NLP/LLM2Vec-Mistral-7B-Instruct-v2-mntp",
         )    
         
         teacher_model = teacher_model.merge_and_unload()  # This can take several minutes on cpu
 
         # Loading unsupervised SimCSE model. This loads the trained LoRA weights on top of MNTP model. Hence the final weights are -- Base model + MNTP (LoRA) + SimCSE (LoRA).
         teacher_model = PeftModel.from_pretrained(
-            teacher_model, "McGill-NLP/LLM2Vec-Sheared-LLaMA-mntp-unsup-simcse"
+            teacher_model, "McGill-NLP/LLM2Vec-Mistral-7B-Instruct-v2-mntp-unsup-simcse"
         )
         teacher_model = teacher_model.merge_and_unload()
 
