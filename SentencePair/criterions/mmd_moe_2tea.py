@@ -32,7 +32,7 @@ class CKALoss(nn.Module):
     
         return 1 - num/torch.sqrt(den1*den2)
 
-class MMD_MOE(CrossEntropyLossMoE):
+class MMD_MOE_2TEA(CrossEntropyLossMoE):
     def __init__(self, args) -> None:
         super().__init__(args)
         self.kd_rate = args.kd_rate  # Ensure kd_rate is initialized
