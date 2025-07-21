@@ -213,8 +213,8 @@ def get_args():
     args.n_gpu = args.n_gpu * args.n_nodes
     
     # Handle backward compatibility for teacher model path
-    if args.teacher_model_path is not None and args.teacher_model_1_path is None:
-        args.teacher_model_1_path = args.teacher_model_path
-        print("Warning: --teacher-model-path is deprecated. Using as --teacher-model-1-path")
-        
+    if args.teacher_model_path is not None and args.teacher_model_2_path is None:
+        args.teacher_model_2_path = args.teacher_model_path
+        print("Warning: --teacher-model-path is deprecated. Using as --teacher-model-2-path")
+
     return args
