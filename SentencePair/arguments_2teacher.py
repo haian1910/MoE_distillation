@@ -32,7 +32,6 @@ def add_model_args(parser: argparse.ArgumentParser):
     group.add_argument("--n-nodes", type=int, default=1)
     
     # Updated: Replace single teacher model with two teacher models
-    group.add_argument("--teacher-model-1-path", type=str, default=None)
     group.add_argument("--teacher-model-2-path", type=str, default=None)
     # Keep the old argument for backward compatibility (optional)
     group.add_argument("--teacher-model-path", type=str, default=None)
