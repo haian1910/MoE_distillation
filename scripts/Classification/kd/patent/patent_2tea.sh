@@ -19,10 +19,10 @@ BASE_PATH=/content/MoE_distillation
 CKPT_NAME="bert"
 CKPT_PATH="${BASE_PATH}/model_hub/${CKPT_NAME}"
 TEACHER_MODEL_NAME="LLM2Vec"
-TEACHER_MODEL_PATH="/content/drive/MyDrive/2MMath/data_distillation/checkpoint_for_test/Llama_sft_scitail" # checkpoint LLM2Vec Mistral 7B
-TEACHER_MODEL_2_PATH = "/content/drive/MyDrive/2MMath/data_distillation/checkpoint_for_test/Qwen_0.6B_embedding_scitail" #checkpoint Qwen 0.6B embedding
+TEACHER_MODEL_PATH="/content/drive/MyDrive/Colab_Notebooks/data_distillation/checkpoint_for_test/Llama_sft_scitail" # checkpoint LLM2Vec Mistral 7B
+TEACHER_MODEL_2_PATH="/content/drive/MyDrive/Colab_Notebooks/data_distillation/checkpoint_for_test/Qwen_0.6B_embedding_scitail" #checkpoint Qwen 0.6B embedding
 # data
-DATA_DIR="/content/drive/MyDrive/2MMath/data_distillation/data_test/patent"
+DATA_DIR="/content/drive/MyDrive/Colab_Notebooks/data_distillation/data_test/patent"
 NUM_LABELS=9
 # task
 TASK="mmd_moe_2tea"
@@ -35,7 +35,7 @@ EPOCH=5
 KD_RATE=0.5
 KD_TEMP=2.0
 # length
-MAX_LENGTH=512
+MAX_LENGTH=64
 # distiller
 PROJECTOR_CONFIG_PATH="${BASE_PATH}/configs/projector_config.json"
 PROJECTOR_LR=0.001
@@ -59,6 +59,7 @@ OPTS+=" --ckpt-name ${CKPT_NAME}"
 OPTS+=" --model-path ${CKPT_PATH}"
 OPTS+=" --n-gpu ${GPUS_PER_NODE}"
 OPTS+=" --teacher-model-path ${TEACHER_MODEL_PATH}"
+OPTS+=" --teacher-model-2-path ${TEACHER_MODEL_2_PATH}"
 OPTS+=" --teacher-model-fp16"
 OPTS+=" --gradient-checkpointing"
 # data
