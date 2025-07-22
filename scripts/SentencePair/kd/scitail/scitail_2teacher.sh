@@ -59,6 +59,7 @@ OPTS+=" --ckpt-name ${CKPT_NAME}"
 OPTS+=" --model-path ${CKPT_PATH}"
 OPTS+=" --n-gpu ${GPUS_PER_NODE}"
 OPTS+=" --teacher-model-path ${TEACHER_MODEL_PATH}"
+OPTS+=" --teacher-model-2-path ${TEACHER_MODEL_2_PATH}"
 OPTS+=" --teacher-model-fp16"
 OPTS+=" --gradient-checkpointing"
 # data
