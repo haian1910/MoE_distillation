@@ -162,15 +162,15 @@ class MMD_MOE(CrossEntropyLossMoE):
         
         # Expert 1: Cosine Loss - compute per sample
         expert1_output = expert_outputs[0]  # [batch_size, teacher_hidden_size]
-        #cosine_loss_per_sample = self.compute_cosine_loss_per_sample(expert1_output, projected_teacher)
-        cosine_loss_per_sample = torch.zeros(expert1_output.size(0), device=expert1_output.device)
+        cosine_loss_per_sample = self.compute_cosine_loss_per_sample(expert1_output, projected_teacher)
+        #cosine_loss_per_sample = torch.zeros(expert1_output.size(0), device=expert1_output.device)
         expert_losses.append(cosine_loss_per_sample)
         log["expert1_cosine_loss"] = cosine_loss_per_sample.mean().detach().clone()
         print("expert1_cosine_loss:", cosine_loss_per_sample.mean().detach().clone())
 
         # Expert 2: CKA Loss - compute per sample 
-        expert2_output = expert_outputs[1]  # [batch_size, teacher_hidden_size]
-        #cka_loss_per_sample = torch.zeros(expert2_output.size(0), device=expert2_output.device)
+        #expert2_output = expert_outputs[1]  # [batch_size, teacher_hidden_size]
+        cka_loss_per_sample = torch.zeros(expert2_output.size(0), device=expert2_output.device)
         cka_loss_per_sample = self.compute_cka_loss_per_sample(expert2_output, projected_teacher)
 
         expert_losses.append(cka_loss_per_sample)
