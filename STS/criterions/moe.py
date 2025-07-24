@@ -261,7 +261,7 @@ class MOE(MoE_STSLoss):
             for j in range(batch_size):
                 if i != j:
                     loss_term = torch.relu(
-                        teacher_similarities[i, j] - student_similarities[i, j] + self.rank_margin
+                        teacher_similarities[i, j] - student_similarities[i, j] - self.rank_margin
                     )
                     sample_loss += loss_term
                     count += 1
