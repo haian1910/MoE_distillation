@@ -237,7 +237,7 @@ class MOE(CrossEntropyLossMoE):
                 if i != j:  # Skip self-similarity
                     # Compute ranking loss for pair (i, j)
                     loss_term = torch.relu(
-                        teacher_similarities[i, j] - student_similarities[i, j] + self.rank_margin
+                        teacher_similarities[i, j] - student_similarities[i, j] - self.rank_margin
                     )
                     sample_loss += loss_term
                     count += 1
