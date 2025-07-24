@@ -475,7 +475,7 @@ class MMD_MOE(MoE_STSLoss):
             
             sample_loss = torch.relu(
                 teacher_similarities[i, other_indices] - 
-                student_similarities[i, other_indices] + 
+                student_similarities[i, other_indices] - 
                 self.rank_margin
             ).mean()
             
