@@ -169,8 +169,8 @@ class MMD_MOE(CrossEntropyLossMoE):
         print("expert1_cosine_loss:", cosine_loss_per_sample.mean().detach().clone())
 
         # Expert 2: CKA Loss - compute per sample 
-        #expert2_output = expert_outputs[1]  # [batch_size, teacher_hidden_size]
-        cka_loss_per_sample = torch.zeros(expert2_output.size(0), device=expert2_output.device)
+        expert2_output = expert_outputs[1]  # [batch_size, teacher_hidden_size]
+        #cka_loss_per_sample = torch.zeros(expert2_output.size(0), device=expert2_output.device)
         cka_loss_per_sample = self.compute_cka_loss_per_sample(expert2_output, projected_teacher)
 
         expert_losses.append(cka_loss_per_sample)
@@ -179,8 +179,8 @@ class MMD_MOE(CrossEntropyLossMoE):
 
         # Expert 3: Ranking Loss - compute per sample (replaced Resim Loss)
         expert3_output = expert_outputs[2]  # [batch_size, teacher_hidden_size]
-        ranking_loss_per_sample = self.compute_ranking_loss_per_sample(expert3_output, projected_teacher)
-        #ranking_loss_per_sample = torch.zeros(expert3_output.size(0), device=expert3_output.device)
+        #ranking_loss_per_sample = self.compute_ranking_loss_per_sample(expert3_output, projected_teacher)
+        ranking_loss_per_sample = torch.zeros(expert3_output.size(0), device=expert3_output.device)
         expert_losses.append(ranking_loss_per_sample)
         log["expert3_ranking_loss"] = ranking_loss_per_sample.mean().detach().clone()
         print("expert3_ranking_loss:", ranking_loss_per_sample.mean().detach().clone())
