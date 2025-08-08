@@ -103,7 +103,7 @@ class MMD_MOE(CrossEntropyLossMoE):
         print("moe_loss:", total_moe_loss)
 
         # Combine all losses
-        loss = (1.0 - self.kd_rate) * loss + self.kd_rate * (mmd_loss + total_moe_loss)
+        loss = (1.0 - self.kd_rate) * loss + self.kd_rate * (0.1*mmd_loss + total_moe_loss)
         log["loss"] = loss.detach().clone()  # Store as tensor for distributed logging
 
         # Compute accuracy
