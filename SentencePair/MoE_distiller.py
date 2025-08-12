@@ -88,15 +88,15 @@ class MoELayer(nn.Module):
         # Get outputs from all experts
         expert_outputs = []
         for expert in self.experts:
-            expert_output = expert(x)  # [batch_size, output_dim]
+            expert_output = expert(x)  # [batch_size, input_dim]
             expert_outputs.append(expert_output)
         
         # Stack expert outputs for easier computation
-        expert_outputs_stacked = torch.stack(expert_outputs, dim=1)  # [batch_size, num_experts, output_dim]
+        expert_outputs_stacked = torch.stack(expert_outputs, dim=1) 
         
         # Compute weighted combination
         gating_weights_expanded = gating_weights.unsqueeze(-1)  # [batch_size, num_experts, 1]
-        final_output = torch.sum(expert_outputs_stacked * gating_weights_expanded, dim=1)  # [batch_size, output_dim]
+        final_output = torch.sum(expert_outputs_stacked * gating_weights_expanded, dim=1)  
         
         return expert_outputs, gating_weights, final_output
 
@@ -154,8 +154,8 @@ class MoEDistilledBERT(nn.Module):
         # Pass through MoE layer
         expert_outputs, gating_weights, moe_final_output = self.moe_layer(cls_output)
         
-        # Get final classification logits using original classifier
-        classification_logits = self.classifier(cls_output)
+        # Get final classification logits using original classifier, pass the moe_final_output not the original CLS
+        classification_logits = self.classifier(moe_final_output)
         
         # Compute loss if labels are provided
         loss = None
