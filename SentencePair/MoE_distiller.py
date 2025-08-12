@@ -31,7 +31,7 @@ class ExpertNetwork(nn.Module):
             nn.Linear(input_dim, hidden_dim),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(hidden_dim, output_dim)
+            nn.Linear(hidden_dim, input_dim)
         )
     
     def forward(self, x):
@@ -112,7 +112,7 @@ class MoEDistilledBERT(nn.Module):
         # MoE layer
         self.moe_layer = MoELayer(
             input_dim=self.bert_hidden_size,
-            output_dim=teacher_hidden_size,  # Align with teacher output dimension
+            output_dim=self.bert_hidden_size,  # remain unchanged hidden size
             num_experts=num_experts,
             expert_hidden_dim=expert_hidden_dim
         )
