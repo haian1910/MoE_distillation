@@ -52,8 +52,8 @@ class MOE(CrossEntropyLossMoE):
         self.diversity_weight = getattr(args, 'diversity_weight', 1)
 
         # Create projections for experts 1 and 2 (expert 3 doesn't need projection)
-        self.expert1_projection = OrthogonalProjection(768, 2048)
-        self.expert2_projection = OrthogonalProjection(768, 2048)
+        self.expert1_projection = OrthogonalProjection(768, 4096)
+        self.expert2_projection = OrthogonalProjection(768, 4096)
         self.ortho_weight = getattr(args, 'ortho_weight', 1)  # Add this line
         
         # Flag to track if projections have been moved to device
@@ -239,7 +239,7 @@ class MOE(CrossEntropyLossMoE):
     def compute_pairwise_relation_loss_per_sample(self, student_output, teacher_output):
         """
         Compute margin-based pairwise relation loss per sample.
-        L_rank = sum_i sum_j max(0, sim(z_i^s, z_j^s) - sim(z_i^t, z_j^t) + δ)
+        L_rank = sum_i sum_j max(0, abs(sim(z_i^s, z_j^s) - sim(z_i^t, z_j^t)) - δ)
         
         Args:
             student_output: [batch_size, student_hidden_size] student embeddings
@@ -269,7 +269,7 @@ class MOE(CrossEntropyLossMoE):
                 if i != j:  # Skip self-similarity
                     # Compute pairwise relation loss for pair (i, j)
                     loss_term = torch.relu(
-                        teacher_similarities[i, j] - student_similarities[i, j] - self.rank_margin
+                        torch.abs(teacher_similarities[i, j] - student_similarities[i, j]) - self.rank_margin
                     )
                     sample_loss += loss_term
                     count += 1
