@@ -16,6 +16,7 @@ from .mmd import MMD
 from .mmd_moe import MMD_MOE
 from .mmd_moe_2tea import MMD_MOE_2TEA
 from .topk_cka import TOPK_CKA
+from .cka_moe import CKA_MOE
 criterion_list = {
     "cross_entropy": CrossEntropyLoss,
     "various_divergence": VariousDivergence,
@@ -35,7 +36,8 @@ criterion_list = {
     "mmd": MMD,
     "mmd_moe": MMD_MOE,
     "mmd_moe_2tea": MMD_MOE_2TEA,
-    "topk_cka": TOPK_CKA
+    "topk_cka": TOPK_CKA,
+    "cka_moe": CKA_MOE
 }
 
 def build_criterion(args):
