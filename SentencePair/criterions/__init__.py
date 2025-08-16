@@ -35,7 +35,7 @@ criterion_list = {
     "mmd": MMD,
     "mmd_moe": MMD_MOE,
     "mmd_moe_2tea": MMD_MOE_2TEA,
-    "topk_cka: TOPK_CKA
+    "topk_cka": TOPK_CKA
 }
 
 def build_criterion(args):
