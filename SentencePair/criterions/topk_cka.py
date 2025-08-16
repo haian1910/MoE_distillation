@@ -70,7 +70,7 @@ class TOPK_CKA(CrossEntropyLossMoE):
         self.kd_rate = args.kd_rate  # Ensure kd_rate is initialized
         self.topk = getattr(args, 'topk', 3)  # Default top-k value
         self.temperature = getattr(args, 'temperature', 1.0)  # Temperature for softmax
-        self.ortho_reg_weight = getattr(args, 'ortho_reg_weight', 1)  # Weight for orthogonal regularization
+        self.ortho_reg_weight = getattr(args, 'ortho_reg_weight', 0.1)  # Weight for orthogonal regularization
         
         # Initialize CKA loss
         self.cka_loss = CKALoss()
@@ -124,6 +124,7 @@ class TOPK_CKA(CrossEntropyLossMoE):
         kd_loss, log = self.compute_topk_cka_loss(
             outputs, teacher_outputs, output_data, input_data, distiller, log
         )
+        print("topk_cka_loss:", kd_loss)
         
         # Add orthogonal regularization loss if projector exists
         ortho_loss = 0
@@ -182,122 +183,114 @@ class TOPK_CKA(CrossEntropyLossMoE):
         student_layer_num = len(student_hidden_states)
         teacher_layer_num = len(teacher_hidden_states)
         
-        # Define layer mapping (you can adjust this based on your needs)
-        # Map last few student layers to last few teacher layers
-        num_layers_to_align = [9, 10]  # Adjust based on your model architecture
+        # Define layer mapping - align last few layers
+        # For BERT (12 layers) to LLM2Vec-Mistral (32 layers), we align last few layers
+        num_layers_to_align = min(3, student_layer_num)  # Adjust based on your needs
+        student_layer_indices = list(range(student_layer_num - num_layers_to_align, student_layer_num))
+        teacher_layer_indices = list(range(teacher_layer_num - num_layers_to_align, teacher_layer_num))
         
-        # Align the last few layers
-        for i in range(len(num_layers_to_align)):
-            student_layer_idx = num_layers_to_align[i]
-            teacher_layer_idx = 3* student_layer_idx  # Example mapping, adjust as needed
+        # Create orthogonal projector if not exists
+        if self.projector is None:
+            student_dim = student_hidden_states[0].size(-1)
+            teacher_dim = teacher_hidden_states[0].size(-1)
+            self.projector = OrthogonalProjection(student_dim, teacher_dim)
+            self.projector = self.projector.to(student_hidden_states[0].device)
+            print(f"Created orthogonal projector: {student_dim} -> {teacher_dim}")
+        
+        # Process each layer alignment
+        for s_idx, t_idx in zip(student_layer_indices, teacher_layer_indices):
+            # Get hidden states for current layers
+            student_h = student_hidden_states[s_idx]  # [batch_size, seq_len, student_dim]
+            teacher_h = teacher_hidden_states[t_idx]   # [batch_size, seq_len, teacher_dim]
             
-            if student_layer_idx < 0 or teacher_layer_idx < 0:
-                continue
+            # Apply orthogonal projection to student hidden states
+            batch_size, student_seq_len, student_dim = student_h.shape
+            teacher_seq_len = teacher_h.size(1)
+            
+            # Reshape for projection
+            student_h_reshaped = student_h.view(-1, student_dim)  # [batch*seq_len, student_dim]
+            projected_student_h = self.projector(student_h_reshaped)  # [batch*seq_len, teacher_dim]
+            projected_student_h = projected_student_h.view(batch_size, student_seq_len, -1)  # [batch, seq_len, teacher_dim]
+            
+            # Handle different sequence lengths due to different tokenizers
+            if student_seq_len != teacher_seq_len:
+                # Create soft representation using top-k token transfer
+                aligned_teacher_h = self.create_soft_representation(
+                    projected_student_h, teacher_h, student_seq_len, teacher_seq_len
+                )
+            else:
+                aligned_teacher_h = teacher_h
                 
-            # Get hidden states for this layer
-            student_hidden = student_hidden_states[student_layer_idx]  # [batch_size, seq_len_s, hidden_dim_s]
-            teacher_hidden = teacher_hidden_states[teacher_layer_idx]  # [batch_size, seq_len_t, hidden_dim_t]
-            
-            # Get attention masks to handle padding
-            student_mask = input_data["attention_mask"]  # [batch_size, seq_len_s]
-            teacher_mask = input_data["teacher_attention_mask"]  # [batch_size, seq_len_t]
-            
-            # Compute layer-wise CKA loss
-            layer_cka_loss = self.compute_single_layer_topk_cka(
-                student_hidden, 
-                teacher_hidden,
-                student_mask,
-                teacher_mask
-            )
-            
-            total_cka_loss += layer_cka_loss
+            # Compute CKA loss between projected student and (aligned) teacher representations
+            cka_loss = self.cka_loss(student_h_reshaped, aligned_teacher_h)
+            total_cka_loss += cka_loss
             num_aligned_layers += 1
             
             # Log individual layer losses for debugging
-            log[f"cka_loss_layer_{student_layer_idx}"] = layer_cka_loss.detach().clone()
+            log[f"cka_loss_layer_{s_idx}_{t_idx}"] = cka_loss.detach().clone()
         
-        # Average across aligned layers
+        # Average CKA loss across aligned layers
         if num_aligned_layers > 0:
-            total_cka_loss = total_cka_loss / num_aligned_layers
+            avg_cka_loss = total_cka_loss / num_aligned_layers
+        else:
+            avg_cka_loss = torch.tensor(0.0, device=student_hidden_states[0].device)
+            
+        log["avg_cka_loss"] = avg_cka_loss.detach().clone()
+        log["num_aligned_layers"] = torch.tensor(num_aligned_layers, device=student_hidden_states[0].device)
         
-        return total_cka_loss, log
+        return avg_cka_loss, log
     
-    def compute_single_layer_topk_cka(
-        self, 
-        student_hidden, 
-        teacher_hidden,
-        student_mask,
-        teacher_mask
-    ):
+    def create_soft_representation(self, student_h, teacher_h, student_seq_len, teacher_seq_len):
         """
-        Compute Top-k Token Transfer + CKA loss for a single layer pair
+        Create soft representation for teacher tokens aligned to student tokens using top-k transfer
         
         Args:
-            student_hidden: [batch_size, seq_len_s, hidden_dim_s]
-            teacher_hidden: [batch_size, seq_len_t, hidden_dim_t]
-            student_mask: [batch_size, seq_len_s]
-            teacher_mask: [batch_size, seq_len_t]
-        """
-        batch_size, seq_len_s, hidden_dim_s = student_hidden.shape
-        _, seq_len_t, hidden_dim_t = teacher_hidden.shape
-        
-        # Initialize projector if needed (project student to teacher dimension space)
-        if hidden_dim_s != hidden_dim_t:
-            if self.projector is None or self.projector.projector.in_features != hidden_dim_s:
-                self.projector = OrthogonalProjection(hidden_dim_s, hidden_dim_t).to(student_hidden.device)
+            student_h: [batch_size, student_seq_len, hidden_dim] - projected student hidden states
+            teacher_h: [batch_size, teacher_seq_len, hidden_dim] - teacher hidden states
+            student_seq_len: length of student sequence
+            teacher_seq_len: length of teacher sequence
             
-            # Project student hidden states to teacher dimension
-            student_hidden_proj = self.projector(student_hidden)  # [batch_size, seq_len_s, hidden_dim_t]
-        else:
-            student_hidden_proj = student_hidden
+        Returns:
+            aligned_teacher_h: [batch_size, student_seq_len, hidden_dim] - aligned teacher representations
+        """
+        batch_size, _, hidden_dim = student_h.shape
+        device = student_h.device
         
-        # Step 1: Create soft representation
-        # Compute cosine similarities between all student-teacher token pairs
-        # Normalize hidden states
-        student_norm = F.normalize(student_hidden_proj, p=2, dim=-1)  # [batch_size, seq_len_s, hidden_dim_t]
-        teacher_norm = F.normalize(teacher_hidden, p=2, dim=-1)  # [batch_size, seq_len_t, hidden_dim_t]
+        # Initialize aligned teacher representations
+        aligned_teacher_h = torch.zeros(batch_size, student_seq_len, hidden_dim, 
+                                      device=device, dtype=student_h.dtype)
         
-        # Compute similarity matrix
-        similarity_matrix = torch.bmm(student_norm, teacher_norm.transpose(1, 2))  # [batch_size, seq_len_s, seq_len_t]
+        # For each student token position, find top-k similar teacher tokens
+        for p in range(student_seq_len):  # For each student token position
+            student_token = student_h[:, p, :]  # [batch_size, hidden_dim]
+            
+            # Compute cosine similarities with all teacher tokens
+            # student_token: [batch_size, hidden_dim]
+            # teacher_h: [batch_size, teacher_seq_len, hidden_dim]
+            
+            # Normalize for cosine similarity
+            student_token_norm = F.normalize(student_token, p=2, dim=-1)  # [batch_size, hidden_dim]
+            teacher_h_norm = F.normalize(teacher_h, p=2, dim=-1)  # [batch_size, teacher_seq_len, hidden_dim]
+            
+            # Compute cosine similarities
+            similarities = torch.bmm(
+                student_token_norm.unsqueeze(1),  # [batch_size, 1, hidden_dim]
+                teacher_h_norm.transpose(1, 2)    # [batch_size, hidden_dim, teacher_seq_len]
+            ).squeeze(1)  # [batch_size, teacher_seq_len]
+            
+            # Get top-k teacher token indices for each sample in batch
+            topk_values, topk_indices = torch.topk(similarities, k=min(self.topk, teacher_seq_len), dim=-1)
+            # topk_values: [batch_size, k], topk_indices: [batch_size, k]
+            
+            # Compute normalized weights using temperature
+            alpha_weights = F.softmax(topk_values / self.temperature, dim=-1)  # [batch_size, k]
+            
+            # Aggregate teacher vectors for each sample in batch
+            for b in range(batch_size):
+                selected_teacher_tokens = teacher_h[b, topk_indices[b], :]  # [k, hidden_dim]
+                weighted_teacher_token = torch.sum(
+                    alpha_weights[b].unsqueeze(-1) * selected_teacher_tokens, dim=0
+                )  # [hidden_dim]
+                aligned_teacher_h[b, p, :] = weighted_teacher_token
         
-        # Apply masks to ignore padding tokens
-        student_mask_expanded = student_mask.unsqueeze(-1).float()  # [batch_size, seq_len_s, 1]
-        teacher_mask_expanded = teacher_mask.unsqueeze(1).float()  # [batch_size, 1, seq_len_t]
-        mask_matrix = student_mask_expanded * teacher_mask_expanded  # [batch_size, seq_len_s, seq_len_t]
-        
-        # Set similarity to -inf for padded positions
-        similarity_matrix = similarity_matrix.masked_fill(mask_matrix == 0, -1e9)
-        
-        # Step 2: Select top-k teacher tokens for each student token
-        topk_values, topk_indices = torch.topk(similarity_matrix, k=min(self.topk, seq_len_t), dim=-1)  # [batch_size, seq_len_s, k]
-        
-        # Step 3: Compute normalized weights using temperature
-        topk_weights = F.softmax(topk_values / self.temperature, dim=-1)  # [batch_size, seq_len_s, k]
-        
-        # Step 4: Aggregate teacher representations
-        aggregated_teacher = torch.zeros_like(student_hidden_proj)  # [batch_size, seq_len_s, hidden_dim_t]
-        
-        for b in range(batch_size):
-            for s in range(seq_len_s):
-                if student_mask[b, s] == 0:  # Skip padding tokens
-                    continue
-                    
-                # Get top-k teacher indices for this student token
-                teacher_indices = topk_indices[b, s]  # [k]
-                weights = topk_weights[b, s]  # [k]
-                
-                # Aggregate teacher representations
-                for k_idx in range(len(teacher_indices)):
-                    t_idx = teacher_indices[k_idx]
-                    if t_idx < seq_len_t and teacher_mask[b, t_idx] == 1:  # Valid teacher token
-                        aggregated_teacher[b, s] += weights[k_idx] * teacher_hidden[b, t_idx]
-        
-        # Step 5: Compute CKA loss between student and aggregated teacher representations
-        # Reshape for CKA computation
-        student_flat = student_hidden.view(batch_size, -1)  # [batch_size, seq_len_s * hidden_dim_s]
-        teacher_flat = aggregated_teacher.view(batch_size, -1)  # [batch_size, seq_len_s * hidden_dim_t]
-        
-        # Apply CKA loss
-        cka_loss = self.cka_loss(student_flat, teacher_flat)
-        
-        return cka_loss
+        return aligned_teacher_h  # [batch_size, student_seq_len, hidden_dim]
