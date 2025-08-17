@@ -458,7 +458,7 @@ class CKA_MOE(CrossEntropyLossMoE):
         
         # Define layer mapping - align last few layers
         # For BERT (12 layers) to LLM2Vec-Mistral (32 layers), we align last few layers
-        num_layers_to_align = min(3, student_layer_num)  # Adjust based on your needs
+        num_layers_to_align = min(9, student_layer_num)  # Adjust based on your needs
         student_layer_indices = list(range(student_layer_num - num_layers_to_align, student_layer_num))
         teacher_layer_indices = list(range(teacher_layer_num - num_layers_to_align, teacher_layer_num))
         
