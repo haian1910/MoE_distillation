@@ -169,7 +169,7 @@ class CKA_MOE(CrossEntropyLossMoE):
         # Add orthogonal loss to the final loss
         # You may want to add a weight parameter for the orthogonal loss
         ortho_weight = getattr(self, 'ortho_weight', 1)  # Default weight of 1
-        loss = (1.0 - self.kd_rate) * loss + self.kd_rate * (0.7*total_moe_loss + 0.3*topk_cka_loss) + ortho_loss
+        loss = (1.0 - self.kd_rate) * loss + self.kd_rate * (total_moe_loss + topk_cka_loss) + ortho_loss
         log["loss"] = loss.detach().clone()  # Store as tensor for distributed logging
 
         # Compute accuracy
