@@ -34,7 +34,8 @@ criterion_list = {
     "ross_entropy_loss_moe": CrossEntropyLossMoE,
     "mmd": MMD,
     "mmd_moe": MMD_MOE,
-    "mmd_moe_2tea": MMD_MOE_2TEA
+    "mmd_moe_2tea": MMD_MOE_2TEA,
+    "cka_moe": CKA_MOE
 }
 
 def build_criterion(args):
