@@ -15,6 +15,7 @@ from .moe import MOE
 from .mmd import MMD
 from .mmd_moe import MMD_MOE
 from .mmd_moe_2tea import MMD_MOE_2TEA
+from .cka_moe import CKA_MOE
 criterion_list = {
     "cross_entropy": CrossEntropyLoss,
     "various_divergence": VariousDivergence,
