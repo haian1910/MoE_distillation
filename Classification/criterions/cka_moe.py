@@ -3,42 +3,17 @@ import torch.nn as nn
 import torch.nn.functional as F
 from .cross_entropy_loss_moe import CrossEntropyLossMoE
 
-# orthogonal projection for loss in expert1 and expert 2
-class OrthogonalProjection(nn.Module):
+# Simple linear projection for loss in expert1 and expert 2
+class LinearProjection(nn.Module):
     def __init__(self, in_dim=768, out_dim=4096):
-        super(OrthogonalProjection, self).__init__()
-        # Create a regular linear layer first
+        super(LinearProjection, self).__init__()
         self.projector = nn.Linear(in_dim, out_dim, bias=False)
-        # Initialize with orthogonal weights (in float32)
+        # Initialize with Xavier uniform
         with torch.no_grad():
-            nn.init.orthogonal_(self.projector.weight)
+            nn.init.xavier_uniform_(self.projector.weight)
 
     def forward(self, x):
-        # Handle dtype conversion for orthogonal constraint if needed
-        original_dtype = x.dtype
-        
-        # If input is bfloat16, we can work directly with it
-        # The linear layer will handle the computation
         return self.projector(x)
-        
-    def orthogonal_regularization_loss(self):
-        """
-        Optional: Add this to your total loss to maintain orthogonality during training
-        L_ortho = ||W^T W - I||_F^2
-        """
-        W = self.projector.weight  # [out_dim, in_dim]
-        if W.shape[0] >= W.shape[1]:  # out_dim >= in_dim
-            # W^T W should be identity
-            WtW = torch.mm(W.t(), W)  # [in_dim, in_dim]
-            I = torch.eye(W.shape[1], device=W.device, dtype=W.dtype)
-        else:  # out_dim < in_dim  
-            # W W^T should be identity
-            WWt = torch.mm(W, W.t())  # [out_dim, out_dim]
-            I = torch.eye(W.shape[0], device=W.device, dtype=W.dtype)
-            WtW = WWt
-        
-        ortho_loss = torch.norm(WtW - I, p='fro') ** 2
-        return ortho_loss
     
 class CKALoss(nn.Module):
     """CKA Loss for measuring similarity between hidden representations"""
@@ -76,15 +51,17 @@ class CKA_MOE(CrossEntropyLossMoE):
         self.diversity_weight = getattr(args, 'diversity_weight', 1)
 
         # Create projections for experts 1 and 2 (expert 3 doesn't need projection)
-        self.projection = OrthogonalProjection(768, 4096)
-        self.ortho_weight = getattr(args, 'ortho_weight', 1)  # Add this line
-        self.topk = getattr(args, 'topk', 3)  # Default top-k value
+        self.projection = LinearProjection(768, 4096)
+        
+        # Dynamic top-k selection parameters
         self.temperature = getattr(args, 'temperature', 1.0)  # Temperature for softmax
+        self.probability_mass_threshold = getattr(args, 'probability_mass_threshold', 0.8)  # t in the algorithm
+        self.k_min = getattr(args, 'k_min', 1)  # Minimum number of tokens to select
+        self.k_max = getattr(args, 'k_max', 3)  # Maximum number of tokens to select
+        self.s_min = getattr(args, 's_min', 0.3)  # Minimum similarity threshold
         
         # Initialize CKA loss
         self.cka_loss = CKALoss()
-        
-        # Initialize orthogonal projector (will be created dynamically based on dimensions)
         
         # Flag to track if projections have been moved to device
         self._projections_initialized = False
@@ -153,11 +130,6 @@ class CKA_MOE(CrossEntropyLossMoE):
         log["diversity_loss"] = diversity_loss.detach().clone()
         print("diversity_loss:", diversity_loss.detach().clone())
         
-        # Compute orthogonal regularization loss
-        ortho_loss = self.projection.orthogonal_regularization_loss()
-        log["ortho_loss"] = ortho_loss.detach().clone()
-        print("ortho_loss:", ortho_loss.detach().clone())
-        
         # Combine all losses
         total_moe_loss = moe_loss + self.diversity_weight * diversity_loss
 
@@ -166,10 +138,8 @@ class CKA_MOE(CrossEntropyLossMoE):
         )
         print("topk_cka_loss:", topk_cka_loss)
 
-        # Add orthogonal loss to the final loss
-        # You may want to add a weight parameter for the orthogonal loss
-        ortho_weight = getattr(self, 'ortho_weight', 1)  # Default weight of 1
-        loss = (1.0 - self.kd_rate) * loss + self.kd_rate * (total_moe_loss + topk_cka_loss) + ortho_loss
+        # Final loss combination
+        loss = (1.0 - self.kd_rate) * loss + self.kd_rate * (total_moe_loss + topk_cka_loss)
         log["loss"] = loss.detach().clone()  # Store as tensor for distributed logging
 
         # Compute accuracy
@@ -227,7 +197,7 @@ class CKA_MOE(CrossEntropyLossMoE):
         # Expert 1: Cosine Loss - compute per sample
         expert1_output = expert_outputs[0]  # [batch_size, student_hidden_size]
         
-        # Because of size mismatch between student and teacher, we project student to teacher size using an orthogonal projection
+        # Because of size mismatch between student and teacher, we project student to teacher size using linear projection
         projected_expert1 = self.projection(expert1_output)  # [batch_size, teacher_hidden_size]
 
         cosine_loss_per_sample = self.compute_cosine_loss_per_sample(projected_expert1, projected_teacher) 
@@ -462,21 +432,13 @@ class CKA_MOE(CrossEntropyLossMoE):
         student_layer_indices = list(range(student_layer_num - num_layers_to_align, student_layer_num))
         teacher_layer_indices = list(range(teacher_layer_num - num_layers_to_align, teacher_layer_num))
         
-        # Create orthogonal projector if not exists
-        if self.projection is None:
-            student_dim = student_hidden_states[0].size(-1)
-            teacher_dim = teacher_hidden_states[0].size(-1)
-            self.projection = OrthogonalProjection(student_dim, teacher_dim)
-            self.projection = self.projector.to(student_hidden_states[0].device)
-            print(f"Created orthogonal projector: {student_dim} -> {teacher_dim}")
-        
         # Process each layer alignment
         for s_idx, t_idx in zip(student_layer_indices, teacher_layer_indices):
             # Get hidden states for current layers
             student_h = student_hidden_states[s_idx]  # [batch_size, seq_len, student_dim]
             teacher_h = teacher_hidden_states[t_idx]   # [batch_size, seq_len, teacher_dim]
             
-            # Apply orthogonal projection to student hidden states
+            # Apply linear projection to student hidden states
             batch_size, student_seq_len, student_dim = student_h.shape
             teacher_seq_len = teacher_h.size(1)
             
@@ -487,7 +449,7 @@ class CKA_MOE(CrossEntropyLossMoE):
             
             # Handle different sequence lengths due to different tokenizers
             if student_seq_len != teacher_seq_len:
-                # Create soft representation using top-k token transfer
+                # Create soft representation using dynamic top-k token transfer
                 aligned_teacher_h = self.create_soft_representation(
                     projected_student_h, teacher_h, student_seq_len, teacher_seq_len
                 )
@@ -495,7 +457,8 @@ class CKA_MOE(CrossEntropyLossMoE):
                 aligned_teacher_h = teacher_h
                 
             # Compute CKA loss between projected student and (aligned) teacher representations
-            cka_loss = self.cka_loss(student_h_reshaped, aligned_teacher_h)
+            cka_loss = self.cka_loss(projected_student_h.view(-1, projected_student_h.size(-1)), 
+                                   aligned_teacher_h.view(-1, aligned_teacher_h.size(-1)))
             total_cka_loss += cka_loss
             num_aligned_layers += 1
             
@@ -515,7 +478,8 @@ class CKA_MOE(CrossEntropyLossMoE):
     
     def create_soft_representation(self, student_h, teacher_h, student_seq_len, teacher_seq_len):
         """
-        Create soft representation for teacher tokens aligned to student tokens using top-k transfer
+        Create soft representation for teacher tokens aligned to student tokens using dynamic top-k transfer
+        following the algorithm in the paper.
         
         Args:
             student_h: [batch_size, student_seq_len, hidden_dim] - projected student hidden states
@@ -533,37 +497,76 @@ class CKA_MOE(CrossEntropyLossMoE):
         aligned_teacher_h = torch.zeros(batch_size, student_seq_len, hidden_dim, 
                                       device=device, dtype=student_h.dtype)
         
-        # For each student token position, find top-k similar teacher tokens
-        for p in range(student_seq_len):  # For each student token position
-            student_token = student_h[:, p, :]  # [batch_size, hidden_dim]
+        # For each student token position p ∈ {1, ..., n_i}
+        for p in range(student_seq_len):
+            student_token = student_h[:, p, :]  # [batch_size, hidden_dim] - h_{i,p}^(s)
             
-            # Compute cosine similarities with all teacher tokens
-            # student_token: [batch_size, hidden_dim]
-            # teacher_h: [batch_size, teacher_seq_len, hidden_dim]
-            
-            # Normalize for cosine similarity
+            # Normalize for cosine similarity computation
             student_token_norm = F.normalize(student_token, p=2, dim=-1)  # [batch_size, hidden_dim]
             teacher_h_norm = F.normalize(teacher_h, p=2, dim=-1)  # [batch_size, teacher_seq_len, hidden_dim]
             
-            # Compute cosine similarities
+            # Compute cosine similarities s_{p,q} = sim(h_{i,p}^(s)W, h_{i,q}^(t)) for q = 1, ..., m_i
             similarities = torch.bmm(
                 student_token_norm.unsqueeze(1),  # [batch_size, 1, hidden_dim]
                 teacher_h_norm.transpose(1, 2)    # [batch_size, hidden_dim, teacher_seq_len]
             ).squeeze(1)  # [batch_size, teacher_seq_len]
             
-            # Get top-k teacher token indices for each sample in batch
-            topk_values, topk_indices = torch.topk(similarities, k=min(self.topk, teacher_seq_len), dim=-1)
-            # topk_values: [batch_size, k], topk_indices: [batch_size, k]
-            
-            # Compute normalized weights using temperature
-            alpha_weights = F.softmax(topk_values / self.temperature, dim=-1)  # [batch_size, k]
-            
-            # Aggregate teacher vectors for each sample in batch
+            # Process each sample in the batch
             for b in range(batch_size):
-                selected_teacher_tokens = teacher_h[b, topk_indices[b], :]  # [k, hidden_dim]
-                weighted_teacher_token = torch.sum(
-                    alpha_weights[b].unsqueeze(-1) * selected_teacher_tokens, dim=0
-                )  # [hidden_dim]
-                aligned_teacher_h[b, p, :] = weighted_teacher_token
+                batch_similarities = similarities[b]  # [teacher_seq_len]
+                
+                # Convert similarities to full distribution via softmax: α̃_{p,q}
+                alpha_tilde = F.softmax(batch_similarities / self.temperature, dim=0)  # [teacher_seq_len]
+                
+                # Dynamic top-k selection based on probability mass
+                # Sort α̃_{p,q} in descending order
+                sorted_probs, sorted_indices = torch.sort(alpha_tilde, descending=True)
+                
+                # Find smallest set S_{i,p} such that cumulative probability mass ≥ t
+                cumsum_probs = torch.cumsum(sorted_probs, dim=0)
+                
+                # Find the first position where cumsum >= threshold
+                valid_positions = (cumsum_probs >= self.probability_mass_threshold).nonzero(as_tuple=True)[0]
+                if len(valid_positions) > 0:
+                    # +1 because we want to include the position where threshold is reached
+                    num_selected = min(valid_positions[0].item() + 1, self.k_max)
+                else:
+                    # If threshold is never reached, select all tokens up to k_max
+                    num_selected = min(teacher_seq_len, self.k_max)
+                
+                # Ensure we select at least k_min tokens
+                num_selected = max(num_selected, self.k_min)
+                num_selected = min(num_selected, teacher_seq_len)  # Can't select more than available
+                
+                # Get the selected indices
+                selected_indices = sorted_indices[:num_selected]
+                selected_probs = sorted_probs[:num_selected]
+                
+                # Apply similarity threshold constraint: s_{p,q} ≥ s_min for any q ∈ S_{i,p}
+                similarity_mask = batch_similarities[selected_indices] >= self.s_min
+                if similarity_mask.sum() > 0:
+                    # Keep only tokens that meet similarity threshold
+                    final_indices = selected_indices[similarity_mask]
+                    final_probs = selected_probs[similarity_mask]
+                else:
+                    # If no tokens meet threshold, keep the top-1 token to avoid empty selection
+                    final_indices = selected_indices[:1]
+                    final_probs = selected_probs[:1]
+                
+                # Renormalize probabilities over the selected set: α_{p,q}
+                if len(final_indices) > 0:
+                    alpha_normalized = final_probs / final_probs.sum()
+                    
+                    # Aggregate teacher vectors: h̃_{i,p}^(t) = Σ_{q∈S_{i,p}} α_{p,q} h_{i,q}^(t)
+                    selected_teacher_tokens = teacher_h[b, final_indices, :]  # [num_final, hidden_dim]
+                    aggregated_token = torch.sum(
+                        alpha_normalized.unsqueeze(-1) * selected_teacher_tokens, dim=0
+                    )  # [hidden_dim]
+                    
+                    aligned_teacher_h[b, p, :] = aggregated_token
+                else:
+                    # Fallback: if no valid selection, use the most similar token
+                    best_idx = torch.argmax(batch_similarities)
+                    aligned_teacher_h[b, p, :] = teacher_h[b, best_idx, :]
         
         return aligned_teacher_h  # [batch_size, student_seq_len, hidden_dim]
