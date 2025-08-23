@@ -7,6 +7,7 @@ from .min_cka import MIN_CKA
 from .mmd import MMD
 from .mmd_moe import  MMD_MOE
 from .moe import MOE
+from .cka_moe import CKA_MOE
 criterion_list = {
     "sts_loss": STSLoss,
     "dual_space_kd_with_cross_model_attention": DualSpaceKDWithCMA,
@@ -15,8 +16,9 @@ criterion_list = {
     "ot_pro_rmse_cka": OT_PRO_RMSE_CKA,
     "min_cka": MIN_CKA,
     "mmd": MMD,
-    "mmd_moe": MMD_MOE.
-    "moe": MOE
+    "mmd_moe": MMD_MOE,
+    "moe": MOE,
+    "cka_moe": CKA_MOE
 }
 
 def build_criterion(args):
