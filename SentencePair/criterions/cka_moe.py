@@ -55,7 +55,7 @@ class CKA_MOE(CrossEntropyLossMoE):
         
         # Dynamic top-k selection parameters
         self.temperature = getattr(args, 'temperature', 1.0)  # Temperature for softmax
-        self.probability_mass_threshold = getattr(args, 'probability_mass_threshold', 0.8)  # t in the algorithm
+        self.probability_mass_threshold = getattr(args, 'probability_mass_threshold', 0.95)  # t in the algorithm
         self.k_min = getattr(args, 'k_min', 1)  # Minimum number of tokens to select
         self.k_max = getattr(args, 'k_max', 3)  # Maximum number of tokens to select
         self.s_min = getattr(args, 's_min', 0.3)  # Minimum similarity threshold
