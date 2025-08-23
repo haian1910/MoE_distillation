@@ -212,6 +212,47 @@ def finetune(args, tokenizer: AutoTokenizer, model: deepspeed.DeepSpeedEngine, o
         int(total_seconds % 60)
     ))
 
+def _ensure_shape_consistency(predictions, targets):
+    """
+    Ensure predictions and targets have consistent shapes for STS regression.
+    STS expects scalar values for each sample.
+    
+    Args:
+        predictions: Model predictions (can be [batch_size, 1] or [batch_size])
+        targets: Target labels (should be [batch_size])
+        
+    Returns:
+        predictions: [batch_size] shaped tensor
+        targets: [batch_size] shaped tensor
+    """
+    # Handle predictions shape
+    if predictions.dim() > 1:
+        if predictions.size(-1) == 1:
+            # If shape is [batch_size, 1], squeeze to [batch_size]
+            predictions = predictions.squeeze(-1)
+        else:
+            # If shape is [batch_size, num_classes] where num_classes > 1
+            # For STS, take the first column or mean
+            if predictions.size(-1) > 1:
+                predictions = predictions[:, 0]  # Take first column
+            else:
+                predictions = predictions.squeeze()
+    
+    # Handle targets shape  
+    if targets.dim() > 1:
+        if targets.size(-1) == 1:
+            targets = targets.squeeze(-1)
+        else:
+            # If targets have multiple dimensions, take the first column
+            targets = targets[:, 0] if targets.size(-1) > 1 else targets.squeeze()
+    
+    # Ensure both tensors are 1D with same length
+    assert predictions.dim() == 1, f"Predictions should be 1D, got shape {predictions.shape}"
+    assert targets.dim() == 1, f"Targets should be 1D, got shape {targets.shape}"
+    assert predictions.size(0) == targets.size(0), f"Batch size mismatch: predictions {predictions.size(0)} vs targets {targets.size(0)}"
+    
+    return predictions, targets
+
 @torch.no_grad()
 def evaluate(args, tokenizer, student_model, dataset, split, device):
     if dist.get_rank() != 0:
@@ -263,6 +304,9 @@ def evaluate(args, tokenizer, student_model, dataset, split, device):
         else:
             raise ValueError(f"Unexpected output format: {type(outputs)}")
         
+        # FIXED: Ensure shape consistency before computing loss
+        predictions, targets = _ensure_shape_consistency(predictions, targets)
+        
         # Compute MSE loss
         loss = F.mse_loss(predictions, targets)
         
@@ -302,6 +346,7 @@ def evaluate(args, tokenizer, student_model, dataset, split, device):
     student_model.train()
 
     return eval_info["loss"], eval_info["pearson"], eval_info["spearman"]
+
 def main():
     torch.backends.cudnn.enabled = False
     args = get_args()
@@ -359,14 +404,14 @@ def main():
         mpu=None,
         config_params=ds_config
     )
-    
+
+
     if args.do_train:
         finetune(args, distiller.student_tokenizer, model_engine, optimizer, lr_scheduler, dataset, device)
-       
+        
     if args.do_eval:
         evaluate(args, distiller.student_tokenizer, model_engine.module.student_model, dataset["test"], "test", device)
+
         
-    
 if __name__ == "__main__":
     main()
-# This code is part of a knowledge distillation framework for STS tasks.
