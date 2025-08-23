@@ -162,7 +162,7 @@ class ExpertNetwork(nn.Module):
             nn.Linear(input_dim, hidden_dim),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(hidden_dim, output_dim)
+            nn.Linear(hidden_dim, input_dim) # Output dim same as input dim for residual addition
         )
     
     def forward(self, x):
@@ -191,8 +191,8 @@ class MoELayer(nn.Module):
         super(MoELayer, self).__init__()
         self.num_experts = num_experts
         self.input_dim = input_dim
-        self.output_dim = output_dim
-        
+        self.output_dim = input_dim
+
         # Create expert networks
         self.experts = nn.ModuleList([
             ExpertNetwork(input_dim, expert_hidden_dim, output_dim)
@@ -243,7 +243,7 @@ class MoEDistilledBERT(nn.Module):
         # MoE layer
         self.moe_layer = MoELayer(
             input_dim=self.bert_hidden_size,
-            output_dim=teacher_hidden_size,  # Align with teacher output dimension
+            output_dim=self.bert_hidden_size,  # Remain unchanged the dim
             num_experts=num_experts,
             expert_hidden_dim=expert_hidden_dim
         )
@@ -303,8 +303,8 @@ class MoEDistilledBERT(nn.Module):
         # Pass through MoE layer
         expert_outputs, gating_weights, moe_final_output = self.moe_layer(cls_output)
         
-        # For STS, apply regressor to get similarity score
-        scores = self.regressor(cls_output)
+        # For STS, apply regressor to the moe_output to get similarity score
+        scores = self.regressor(moe_final_output)
         # Ensure the predicted score is within a reasonable range (0-5)
         scores = torch.sigmoid(scores) * 5.0
         logits = scores  # For compatibility
