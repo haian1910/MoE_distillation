@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from .cross_entropy_loss_moe import CrossEntropyLossMoE
+from .moe_sts_loss import MoE_STSLoss
 
 # Simple linear projection for loss in expert1 and expert 2
 class LinearProjection(nn.Module):
@@ -39,7 +39,7 @@ class CKALoss(nn.Module):
         # Return CKA loss
         return 1 - num / torch.sqrt(den1 * den2)
 
-class CKA_MOE(CrossEntropyLossMoE):
+class CKA_MOE(MoE_STSLoss):
     def __init__(self, args) -> None:
         super().__init__(args)
         self.kd_rate = args.kd_rate
