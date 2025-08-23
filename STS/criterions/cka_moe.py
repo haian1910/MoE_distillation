@@ -77,6 +77,53 @@ class CKA_MOE(MoE_STSLoss):
             self.projection = self.projection.to(device=device, dtype=dtype)
             self._projections_initialized = True
 
+    def _ensure_shape_consistency(self, predictions, labels):
+        """
+        Ensure predictions and labels have consistent shapes for STS regression.
+        STS expects scalar values for each sample.
+        
+        Args:
+            predictions: Model predictions (can be [batch_size, 1] or [batch_size])
+            labels: Target labels (should be [batch_size])
+            
+        Returns:
+            predictions: [batch_size] shaped tensor
+            labels: [batch_size] shaped tensor
+        """
+        # Handle predictions shape
+        if predictions.dim() > 1:
+            if predictions.size(-1) == 1:
+                # If shape is [batch_size, 1], squeeze to [batch_size]
+                predictions = predictions.squeeze(-1)
+            else:
+                # If shape is [batch_size, num_classes] where num_classes > 1
+                # For STS, we need a regression head to convert to scalar
+                if not hasattr(self.distiller, "regression_head"):
+                    # Create regression head if it doesn't exist
+                    self.distiller.regression_head = nn.Linear(
+                        predictions.size(-1), 1, device=predictions.device, dtype=predictions.dtype
+                    )
+                    # Initialize regression head
+                    with torch.no_grad():
+                        self.distiller.regression_head.weight.normal_(mean=0.0, std=0.02)
+                        self.distiller.regression_head.bias.zero_()
+                
+                predictions = self.distiller.regression_head(predictions).squeeze(-1)
+        
+        # Handle labels shape
+        if labels.dim() > 1:
+            if labels.size(-1) == 1:
+                labels = labels.squeeze(-1)
+            else:
+                # If labels have multiple dimensions, take the first column or mean
+                labels = labels[:, 0] if labels.size(-1) > 1 else labels.squeeze()
+        
+        # Ensure both tensors are 1D with same length
+        assert predictions.dim() == 1, f"Predictions should be 1D, got shape {predictions.shape}"
+        assert labels.dim() == 1, f"Labels should be 1D, got shape {labels.shape}"
+        assert predictions.size(0) == labels.size(0), f"Batch size mismatch: predictions {predictions.size(0)} vs labels {labels.size(0)}"
+        
+        return predictions, labels
     
     def forward(
         self, 
@@ -89,6 +136,12 @@ class CKA_MOE(MoE_STSLoss):
         model = distiller.student_model
         teacher_model = distiller.teacher_model
         self.distiller = distiller
+
+        device = next(model.parameters()).device
+        dtype = next(model.parameters()).dtype
+        
+        # Ensure projections are on the correct device and dtype
+        self._ensure_projections_on_device(device, dtype)
         
         # Student forward pass
         outputs = model(
@@ -117,13 +170,14 @@ class CKA_MOE(MoE_STSLoss):
         target_dtype = torch.float32
         device = predictions.device
 
-        # Convert predictions to target dtype and ensure correct shape
+        # Convert predictions to target dtype
         predictions = predictions.to(dtype=target_dtype)
-        if predictions.dim() > 1:
-            predictions = predictions.squeeze(-1)
         
         # Convert labels to the same dtype as predictions
         labels = output_data["labels"].to(dtype=target_dtype, device=device)
+        
+        # FIXED: Ensure shape consistency before computing loss
+        predictions, labels = self._ensure_shape_consistency(predictions, labels)
         
         # Compute MSE loss for STS regression task
         loss_sts = F.mse_loss(predictions, labels)
