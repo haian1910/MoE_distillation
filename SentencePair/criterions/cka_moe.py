@@ -457,8 +457,8 @@ class CKA_MOE(CrossEntropyLossMoE):
                 aligned_teacher_h = teacher_h
                 
             # Compute CKA loss between projected student and (aligned) teacher representations
-            cka_loss = self.cka_loss(projected_student_h.view(-1, projected_student_h.size(-1)), 
-                                   aligned_teacher_h.view(-1, aligned_teacher_h.size(-1)))
+            cka_loss = self.cka_loss(student_h.view(-1, student_h.size(-1)),
+                                    aligned_teacher_h.view(-1, aligned_teacher_h.size(-1)))
             total_cka_loss += cka_loss
             num_aligned_layers += 1
             
