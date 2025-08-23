@@ -261,18 +261,21 @@ class MoE_STSLoss(nn.Module):
                 # For correlations and expert stats, we don't need to divide by batch_denom
                 # but we still average across processes
                 if isinstance(v, torch.Tensor):
-                    # Move tensor to correct device before all_reduce
-                    # Always use float32 for these statistics
-                    record_v = v.clone().to(device).to(torch.float32)
+                    # Handle multi-element tensors by taking mean
+                    if v.numel() > 1:
+                        record_v = v.mean().clone().to(device).to(torch.float32)
+                    else:
+                        record_v = v.clone().to(device).to(torch.float32)
+                        
                     if torch.distributed.is_initialized():
                         try:
                             dist.all_reduce(record_v, dist.ReduceOp.SUM)
                             record_v = record_v.item() / dist.get_world_size()
                         except RuntimeError:
                             # Fallback if all_reduce fails
-                            record_v = v.item()
+                            record_v = record_v.item()
                     else:
-                        record_v = v.item()
+                        record_v = record_v.item()
                 else:
                     record_v = v
                     if torch.distributed.is_initialized():
@@ -280,15 +283,25 @@ class MoE_STSLoss(nn.Module):
             elif k in ["predictions", "target"]:
                 # Just record mean values for monitoring
                 if isinstance(v, torch.Tensor):
-                    record_v = v.item()
+                    # Handle multi-element tensors by taking mean
+                    if v.numel() > 1:
+                        record_v = v.mean().item()
+                    else:
+                        record_v = v.item()
                 else:
                     record_v = v
             else:
                 # Normalize loss by batch_denom and average across processes
                 if isinstance(v, torch.Tensor):
+                    # Handle multi-element tensors by taking mean first
+                    if v.numel() > 1:
+                        v_scalar = v.mean()
+                    else:
+                        v_scalar = v
+                        
                     # Move tensor to correct device before all_reduce
                     # Always use float32 for these statistics
-                    record_v = (v / batch_denom).to(torch.float32)
+                    record_v = (v_scalar / batch_denom).to(torch.float32)
                     if torch.distributed.is_initialized():
                         record_v = record_v.to(device)
                         try:
@@ -296,7 +309,7 @@ class MoE_STSLoss(nn.Module):
                             record_v = record_v.item() / dist.get_world_size()
                         except RuntimeError:
                             # Fallback if all_reduce fails
-                            record_v = (v / batch_denom).item()
+                            record_v = (v_scalar / batch_denom).item()
                     else:
                         record_v = record_v.item()
                 else:
