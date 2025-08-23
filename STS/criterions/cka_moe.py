@@ -48,20 +48,25 @@ class CKA_MOE(CrossEntropyLossMoE):
         self.rank_margin = getattr(args, 'rank_margin', 0.1)
         
         # Parameters for expert diversity loss
-        self.diversity_weight = getattr(args, 'diversity_weight', 1)
+        self.diversity_weight = getattr(args, 'diversity_weight', 1.0)
 
-        # Create projections for experts 1 and 2 (expert 3 doesn't need projection)
+        # Create projections for experts 1 and 2 (for STS dimension matching)
+        # Student BERT: 768 dim -> Teacher LLM2Vec: 4096 dim
         self.projection = LinearProjection(768, 4096)
         
         # Dynamic top-k selection parameters
-        self.temperature = getattr(args, 'temperature', 1.0)  # Temperature for softmax
-        self.probability_mass_threshold = getattr(args, 'probability_mass_threshold', 0.8)  # t in the algorithm
-        self.k_min = getattr(args, 'k_min', 1)  # Minimum number of tokens to select
-        self.k_max = getattr(args, 'k_max', 3)  # Maximum number of tokens to select
-        self.s_min = getattr(args, 's_min', 0.3)  # Minimum similarity threshold
+        self.temperature = getattr(args, 'temperature', 1.0)
+        self.probability_mass_threshold = getattr(args, 'probability_mass_threshold', 0.8)
+        self.k_min = getattr(args, 'k_min', 1)
+        self.k_max = getattr(args, 'k_max', 3)
+        self.s_min = getattr(args, 's_min', 0.3)
         
         # Initialize CKA loss
         self.cka_loss = CKALoss()
+        
+        # STS-specific parameters
+        self.sts_loss_weight = getattr(args, 'sts_loss_weight', 0.3)  # Weight for CKA loss
+        self.mse_loss_fn = nn.MSELoss()  # For STS regression
         
         # Flag to track if projections have been moved to device
         self._projections_initialized = False
@@ -95,7 +100,7 @@ class CKA_MOE(CrossEntropyLossMoE):
             labels=output_data["labels"]
         )
         
-        # Extract predictions for STS task
+        # Extract predictions for STS task - handle both scores and logits
         if hasattr(outputs, 'scores') and outputs.scores is not None:
             predictions = outputs.scores
         elif hasattr(outputs, 'logits') and outputs.logits is not None:
@@ -108,22 +113,21 @@ class CKA_MOE(CrossEntropyLossMoE):
         
         log = {}
 
-        # FIXED: Use float64 for all computations to avoid numerical issues
-        target_dtype = torch.float64
+        # Use float32 for numerical stability in STS regression
+        target_dtype = torch.float32
         device = predictions.device
 
-        # Convert predictions to float64
+        # Convert predictions to target dtype and ensure correct shape
         predictions = predictions.to(dtype=target_dtype)
+        if predictions.dim() > 1:
+            predictions = predictions.squeeze(-1)
         
         # Convert labels to the same dtype as predictions
         labels = output_data["labels"].to(dtype=target_dtype, device=device)
         
-        # Ensure predictions have the correct shape
-        if predictions.dim() > 1:
-            predictions = predictions.squeeze(-1)
-        
-        # Compute MSE loss with consistent dtype
+        # Compute MSE loss for STS regression task
         loss_sts = F.mse_loss(predictions, labels)
+        log["loss_sts"] = loss_sts.detach().clone()
         
         # Teacher forward pass (no gradient)
         with torch.no_grad():
@@ -134,29 +138,27 @@ class CKA_MOE(CrossEntropyLossMoE):
                 output_hidden_states=True,
                 return_dict=True
             )
-        # Compute distillation loss
+        
+        # Compute distillation losses
         moe_loss, log = self.compute_moe_loss(
             outputs, teacher_outputs, output_data, distiller, log
         )
-        print("moe_loss:", moe_loss)
-
+        
         # Compute expert diversity loss
         diversity_loss = self.compute_expert_diversity_loss(outputs['expert_outputs'])
         log["diversity_loss"] = diversity_loss.detach().clone()
-        print("diversity_loss:", diversity_loss.detach().clone())
         
-        # Combine all losses
+        # Combine MoE losses
         total_moe_loss = moe_loss + self.diversity_weight * diversity_loss
 
+        # Compute top-k CKA loss
         topk_cka_loss, log = self.compute_topk_cka_loss(
             outputs, teacher_outputs, output_data, input_data, distiller, log
         )
-        print("topk_cka_loss:", topk_cka_loss)
 
-        # Final loss combination
-        loss = (1.0 - self.kd_rate) * loss + self.kd_rate * (total_moe_loss + 0.3*topk_cka_loss)
-        log["loss"] = loss.detach().clone()  # Store as tensor for distributed logging
-
+        # Final loss combination - balance STS task loss with distillation losses
+        loss = (1.0 - self.kd_rate) * loss_sts + self.kd_rate * (total_moe_loss + 0.3 * topk_cka_loss)
+        log["loss"] = loss.detach().clone()
 
         # Update logging output
         logging_output = self.record_logging_output(
