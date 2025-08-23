@@ -8,6 +8,7 @@ from .mmd import MMD
 from .mmd_moe import  MMD_MOE
 from .moe import MOE
 from .cka_moe import CKA_MOE
+from .moe_sts_loss import MoE_STSLoss
 criterion_list = {
     "sts_loss": STSLoss,
     "dual_space_kd_with_cross_model_attention": DualSpaceKDWithCMA,
@@ -18,7 +19,8 @@ criterion_list = {
     "mmd": MMD,
     "mmd_moe": MMD_MOE,
     "moe": MOE,
-    "cka_moe": CKA_MOE
+    "cka_moe": CKA_MOE,
+    "moe_sts_loss": MoE_STSLoss
 }
 
 def build_criterion(args):
