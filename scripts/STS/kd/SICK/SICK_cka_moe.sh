@@ -23,7 +23,7 @@ TEACHER_MODEL_PATH="/mnt/bn/magellan-product-audit/tu.vu/matrixone/Dynamic_mappi
 # data
 DATASET=SICK
 DATA_DIR="${BASE_PATH}/data/${DATASET}" #task
-TASK="mmd_moe"
+TASK="cka_moe"
 # hp
 BATCH_SIZE=32
 LR=0.00001
