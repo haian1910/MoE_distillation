@@ -39,7 +39,7 @@ class ExpertNetwork(nn.Module):
 
 class GatingNetwork(nn.Module):
     """Gating network to compute expert weights"""
-    def __init__(self, input_dim, num_experts, hidden_dim=256):
+    def __init__(self, input_dim, num_experts, hidden_dim=1024):
         super(GatingNetwork, self).__init__()
         self.gate = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
@@ -56,7 +56,7 @@ class GatingNetwork(nn.Module):
 
 class MoELayer(nn.Module):
     """Mixture of Experts layer"""
-    def __init__(self, input_dim, output_dim, num_experts=3, expert_hidden_dim=256):
+    def __init__(self, input_dim, output_dim, num_experts=3, expert_hidden_dim=1024):
         super(MoELayer, self).__init__()
         self.num_experts = num_experts
         self.input_dim = input_dim
@@ -102,7 +102,7 @@ class MoELayer(nn.Module):
 
 class MoEDistilledBERT(nn.Module):
     """BERT with MoE layer for knowledge distillation"""
-    def __init__(self, bert_model, teacher_hidden_size, num_experts=3, expert_hidden_dim=256):
+    def __init__(self, bert_model, teacher_hidden_size, num_experts=3, expert_hidden_dim=1024):
         super(MoEDistilledBERT, self).__init__()
         self.bert = bert_model
         self.bert_hidden_size = bert_model.config.hidden_size
@@ -349,7 +349,7 @@ class Distiller(nn.Module):
         # MoE specific arguments
         group.add_argument("--num-experts", type=int, default=3,
                            help='number of experts in MoE layer')
-        group.add_argument("--expert-hidden-dim", type=int, default=256,
+        group.add_argument("--expert-hidden-dim", type=int, default=1024,
                            help='hidden dimension for expert networks')
         group.add_argument("--moe-lr", type=float, default=0.001,
                            help='learning rate for MoE components')
@@ -516,7 +516,7 @@ class Distiller(nn.Module):
                 bert_model=bert_model,
                 teacher_hidden_size=teacher_hidden_size,
                 num_experts=getattr(self.args, 'num_experts', 3),
-                expert_hidden_dim=getattr(self.args, 'expert_hidden_dim', 256)
+                expert_hidden_dim=getattr(self.args, 'expert_hidden_dim', 1024)
             )
             
             log_rank(' > number of parameters: {:,}'.format(
