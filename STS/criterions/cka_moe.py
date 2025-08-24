@@ -211,7 +211,7 @@ class CKA_MOE(MoE_STSLoss):
         )
 
         # Final loss combination - balance STS task loss with distillation losses
-        loss = (1.0 - self.kd_rate) * loss_sts + self.kd_rate * (total_moe_loss + 0.3 * topk_cka_loss)
+        loss = (1.0 - self.kd_rate) * loss_sts + self.kd_rate * (total_moe_loss + 0.1 * topk_cka_loss)
         log["loss"] = loss.detach().clone()
 
         # Update logging output
