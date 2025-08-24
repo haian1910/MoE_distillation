@@ -54,7 +54,7 @@ class CKA_MOE(CrossEntropyLossMoE):
         self.projection = LinearProjection(768, 4096)
         
         # Dynamic top-k selection parameters
-        self.temperature = getattr(args, 'temperature', 1.0)  # Temperature for softmax
+        self.temperature = getattr(args, 'temperature', 0.8)  # Temperature for softmax
         self.probability_mass_threshold = getattr(args, 'probability_mass_threshold', 0.95)  # t in the algorithm
         self.k_min = getattr(args, 'k_min', 1)  # Minimum number of tokens to select
         self.k_max = getattr(args, 'k_max', 3)  # Maximum number of tokens to select
@@ -139,7 +139,7 @@ class CKA_MOE(CrossEntropyLossMoE):
         print("topk_cka_loss:", topk_cka_loss)
 
         # Final loss combination
-        loss = (1.0 - self.kd_rate) * loss + self.kd_rate * (total_moe_loss + 0.3*topk_cka_loss)
+        loss = (1.0 - self.kd_rate) * loss + self.kd_rate * (total_moe_loss + 0*topk_cka_loss)
         log["loss"] = loss.detach().clone()  # Store as tensor for distributed logging
 
         # Compute accuracy
