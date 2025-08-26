@@ -1,5 +1,5 @@
 #! /bin/bash
-GPUS=(0 1 2 3 4 5 6 7)
+GPUS=(0)
 export CUDA_VISIBLE_DEVICES=$(IFS=,; echo "${GPUS[*]}")
 
 MASTER_ADDR=localhost
@@ -27,10 +27,10 @@ NUM_LABELS=2
 # task
 TASK="cka_moe"
 # hp
-BATCH_SIZE=32
+BATCH_SIZE=4
 LR=0.00001
 GRAD_ACC=1
-EVAL_BATCH_SIZE=32
+EVAL_BATCH_SIZE=4
 EPOCH=10
 KD_RATE=0.1
 KD_TEMP=2.0
