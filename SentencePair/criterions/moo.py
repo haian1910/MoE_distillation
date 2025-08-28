@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from .cross_entropy_loss_moe import CrossEntropyLossMoE
+from .cross_entropy_loss import CrossEntropyLoss
 
 class LinearProjection(nn.Module):
     def __init__(self, in_dim=768, out_dim=4096):
@@ -38,7 +38,7 @@ class CKALoss(nn.Module):
         # Return CKA loss
         return 1 - num / torch.sqrt(den1 * den2)
 
-class MOO(CrossEntropyLossMoE):
+class MOO(CrossEntropyLoss):
     def __init__(self, args) -> None:
         super().__init__(args)
         self.kd_rate = args.kd_rate
