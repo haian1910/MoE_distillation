@@ -169,14 +169,18 @@ class MOO(CrossEntropyLoss):
         cosine_loss_per_sample = self.compute_cosine_loss_per_sample(
             projected_student_emb, teacher_emb
         )
-        
+        print("cosine_loss_per_sample:", cosine_loss_per_sample.mean().item())
+
         infoNCE_loss_per_sample = self.compute_infoNCE_loss_per_sample(
             projected_student_emb, teacher_emb
         )
-        
+        print("infoNCE_loss_per_sample:", infoNCE_loss_per_sample.mean().item())
+
         pairwise_relation_loss_per_sample = self.compute_pairwise_relation_loss_per_sample(
-            projected_student_emb, teacher_emb
+            student_emb, teacher_emb
         )
+        print("pairwise_relation_loss_per_sample:", pairwise_relation_loss_per_sample.mean().item())
+
 
         # Combine losses with equal weighting
         moo_loss = (cosine_loss_per_sample + infoNCE_loss_per_sample + 
