@@ -60,7 +60,7 @@ class MOO(STSLoss):
         
         # Dynamic top-k selection parameters
         self.temperature = getattr(args, 'temperature', 1.0)
-        self.probability_mass_threshold = getattr(args, 'probability_mass_threshold', 0.8)
+        self.probability_mass_threshold = getattr(args, 'probability_mass_threshold', 0.9)
         self.k_min = getattr(args, 'k_min', 1)
         self.k_max = getattr(args, 'k_max', 3)
         self.s_min = getattr(args, 's_min', 0.3)
