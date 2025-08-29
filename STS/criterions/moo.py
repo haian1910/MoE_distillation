@@ -501,11 +501,11 @@ class MOO(STSLoss):
             avg_cka_loss = total_cka_loss / num_aligned_layers
         else:
             print("Warning: No layers successfully aligned for CKA loss")
-            avg_cka_loss = torch.tensor(0.0, device=device)
+            avg_cka_loss = torch.tensor(0.0, device=student_hidden_states[0].device)
             
         log["avg_cka_loss"] = avg_cka_loss.detach().clone()
-        log["num_aligned_layers"] = torch.tensor(num_aligned_layers, device=device)
-        
+        log["num_aligned_layers"] = torch.tensor(num_aligned_layers, device=student_hidden_states[0].device)
+
         return avg_cka_loss, log
     
     def create_soft_representation(self, student_h, teacher_h, student_seq_len, teacher_seq_len):
