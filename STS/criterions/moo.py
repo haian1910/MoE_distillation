@@ -246,9 +246,9 @@ class MOO(STSLoss):
         pairwise_relation_loss_per_sample = self.compute_pairwise_relation_loss_per_sample(student_emb, teacher_emb)
 
         # Combine losses with weights
-        weighted_losses = (0.2 * cosine_loss_per_sample + 
-                          0.6 * infoNCE_loss_per_sample + 
-                          0.2 * pairwise_relation_loss_per_sample)
+        weighted_losses = (1/3 * cosine_loss_per_sample + 
+                          1/3 * infoNCE_loss_per_sample + 
+                          1/3 * pairwise_relation_loss_per_sample)
 
         # Take mean across batch to get final scalar loss
         moo_loss = weighted_losses.mean()
