@@ -183,8 +183,8 @@ class MOO(CrossEntropyLoss):
 
 
         # Combine losses with equal weighting
-        moo_loss = (0.4*cosine_loss_per_sample + 0.4*infoNCE_loss_per_sample + 
-                   0.2*pairwise_relation_loss_per_sample)
+        moo_loss = (0.2*cosine_loss_per_sample + 0.4*infoNCE_loss_per_sample + 
+                   0.4*pairwise_relation_loss_per_sample)
         
         # Take mean across batch
         moo_loss = moo_loss.mean()
