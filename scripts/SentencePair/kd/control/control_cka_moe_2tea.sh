@@ -35,7 +35,7 @@ EPOCH=5
 KD_RATE=0.5
 KD_TEMP=2.0
 # length
-MAX_LENGTH=64
+MAX_LENGTH=512
 # distiller
 PROJECTOR_CONFIG_PATH="${BASE_PATH}/configs/projector_config.json"
 PROJECTOR_LR=0.001
