@@ -52,6 +52,7 @@ class CKA_MOE_2TEA(CrossEntropyLossMoE):
 
         # Create projections for experts 1 and 2 (expert 3 doesn't need projection)
         self.projection = LinearProjection(768, 4096)
+        self.projection2 = LinearProjection(768, 1024)  # For teacher 2 with 1024 hidden size
         
         # Dynamic top-k selection parameters
         self.temperature = getattr(args, 'temperature', 1.0)  # Temperature for softmax
@@ -250,14 +251,14 @@ class CKA_MOE_2TEA(CrossEntropyLossMoE):
 
         # Expert 3: Cosine Loss for teacher2
         expert3_output = expert_outputs[3]  # [batch_size, 1024]
-        projected_expert3 = self.projection(expert3_output)
+        projected_expert3 = self.projection2(expert3_output)
         cosine_loss_per_sample_3 = self.compute_cosine_loss_per_sample(projected_expert3, projected_teacher_2)
         expert_losses.append(cosine_loss_per_sample_3)
         log["expert3_cosine_loss"] = cosine_loss_per_sample_3.mean().detach().clone()
         
         # Expert 4: CKA Loss for teacher2
         expert4_output = expert_outputs[4]  # [batch_size, 1024]
-        projected_expert4 = self.projection(expert4_output)
+        projected_expert4 = self.projection2(expert4_output)
         cka_loss_per_sample_4 = self.compute_infoNCE_loss_per_sample(projected_expert4, projected_teacher_2)
         expert_losses.append(cka_loss_per_sample_4)
         log["expert4_cka_loss"] = cka_loss_per_sample_4.mean().detach().clone()
