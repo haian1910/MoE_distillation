@@ -39,7 +39,7 @@ class CKALoss(nn.Module):
         # Return CKA loss
         return 1 - num / torch.sqrt(den1 * den2)
 
-class CKA_MOE(CrossEntropyLossMoE):
+class CKA_MOE_2TEA(CrossEntropyLossMoE):
     def __init__(self, args) -> None:
         super().__init__(args)
         self.kd_rate = args.kd_rate
@@ -52,6 +52,7 @@ class CKA_MOE(CrossEntropyLossMoE):
 
         # Create projections for experts 1 and 2 (expert 3 doesn't need projection)
         self.projection = LinearProjection(768, 4096)
+        self.projection2 = LinearProjection(768, 1024)  # For teacher 2 with 1024 hidden size
         
         # Dynamic top-k selection parameters
         self.temperature = getattr(args, 'temperature', 1.0)  # Temperature for softmax
@@ -70,6 +71,7 @@ class CKA_MOE(CrossEntropyLossMoE):
         """Ensure projection layers are on the correct device and dtype"""
         if not self._projections_initialized:
             self.projection = self.projection.to(device=device, dtype=dtype)
+            self.projection2 = self.projection2.to(device=device, dtype=dtype)
             self._projections_initialized = True
 
     
@@ -83,6 +85,7 @@ class CKA_MOE(CrossEntropyLossMoE):
     ):
         model = distiller.student_model
         teacher_model = distiller.teacher_model
+        teacher_model_2 = distiller.teacher_model_2
         self.distiller = distiller
         
         # Get device and dtype from model
@@ -119,9 +122,19 @@ class CKA_MOE(CrossEntropyLossMoE):
                 output_hidden_states=True,  # This is crucial for getting hidden states
                 return_dict=True  # Ensure we get a structured output
             )
+
+            teacher_model_2.eval()
+            teacher_outputs_2 = teacher_model_2(
+                input_data["teacher_input_ids"],
+                attention_mask=input_data["teacher_attention_mask"],
+                output_hidden_states=True,  # This is crucial for getting hidden states
+                return_dict=True  # Ensure we get a structured output
+            )
+
+
         # Compute distillation loss
         moe_loss, log = self.compute_moe_loss(
-            outputs, teacher_outputs, output_data, distiller, log
+            outputs, teacher_outputs, teacher_outputs_2, output_data, distiller, log
         )
         print("moe_loss:", moe_loss)
 
@@ -155,7 +168,7 @@ class CKA_MOE(CrossEntropyLossMoE):
         return loss, logging_output
 
     def compute_moe_loss(
-        self, outputs, teacher_outputs, output_data, distiller, log
+        self, outputs, teacher_outputs, teacher_outputs_2, output_data, distiller, log
     ):
         """
         Compute the Mixture of Experts (MoE) distillation loss for three experts.
@@ -189,7 +202,23 @@ class CKA_MOE(CrossEntropyLossMoE):
         else:
             raise ValueError(f"Unexpected dimension for teacher_hidden: {teacher_hidden.shape}")
 
+        # Same for teacher 2
+        if hasattr(teacher_outputs_2, 'hidden_states') and teacher_outputs_2.hidden_states is not None:
+            # For teacher 2: Qwen 0.6B embedding
+            teacher_hidden_2 = teacher_outputs_2.hidden_states[-1]
+        elif isinstance(teacher_outputs_2, dict) and 'hidden_states' in teacher_outputs_2:
+            teacher_hidden_2 = teacher_outputs_2['hidden_states'][-1]
+
+        if teacher_hidden_2.dim() == 3:
+            teacher_emb_2 = teacher_hidden_2.mean(dim=1)  # Take mean across sequence length
+        elif teacher_hidden_2.dim() == 2:
+            teacher_emb_2 = teacher_hidden_2
+        else:
+            raise ValueError(f"Unexpected dimension for teacher_hidden_2: {teacher_hidden_2.shape}")
+
+
         projected_teacher = teacher_emb  # [batch_size, teacher_hidden_size]
+        projected_teacher_2 = teacher_emb_2 # [batch_size, teacher_hidden_size]
 
         # Compute individual expert losses PER SAMPLE
         expert_losses = []
@@ -210,7 +239,6 @@ class CKA_MOE(CrossEntropyLossMoE):
         # Project expert2 output to teacher size
         projected_expert2 = self.projection(expert2_output)  # [batch_size, teacher_hidden_size]
         infoNCE_loss_per_sample = self.compute_infoNCE_loss_per_sample(projected_expert2, projected_teacher)
-
         expert_losses.append(infoNCE_loss_per_sample)
         log["expert2_infonce_loss"] = infoNCE_loss_per_sample.mean().detach().clone()
         print("expert2_infonce_loss:", infoNCE_loss_per_sample.mean().detach().clone())
@@ -221,6 +249,26 @@ class CKA_MOE(CrossEntropyLossMoE):
         expert_losses.append(pairwise_relation_loss_per_sample)
         log["expert3_pairwise_relation_loss"] = pairwise_relation_loss_per_sample.mean().detach().clone()
         print("expert3_pairwise_relation_loss:", pairwise_relation_loss_per_sample.mean().detach().clone())
+
+        # Expert 3: Cosine Loss for teacher2
+        expert3_output = expert_outputs[3]  # [batch_size, 1024]
+        projected_expert3 = self.projection2(expert3_output)
+        cosine_loss_per_sample_3 = self.compute_cosine_loss_per_sample(projected_expert3, projected_teacher_2)
+        expert_losses.append(cosine_loss_per_sample_3)
+        log["expert3_cosine_loss"] = cosine_loss_per_sample_3.mean().detach().clone()
+        
+        # Expert 4: CKA Loss for teacher2
+        expert4_output = expert_outputs[4]  # [batch_size, 1024]
+        projected_expert4 = self.projection2(expert4_output)
+        cka_loss_per_sample_4 = self.compute_infoNCE_loss_per_sample(projected_expert4, projected_teacher_2)
+        expert_losses.append(cka_loss_per_sample_4)
+        log["expert4_cka_loss"] = cka_loss_per_sample_4.mean().detach().clone()
+        
+        # Expert 5: Ranking Loss for teacher2
+        expert5_output = expert_outputs[5]  # [batch_size, 1024]
+        ranking_loss_per_sample_5 = self.compute_pairwise_relation_loss_per_sample(expert5_output, projected_teacher_2)
+        expert_losses.append(ranking_loss_per_sample_5)
+        log["expert5_ranking_loss"] = ranking_loss_per_sample_5.mean().detach().clone()
 
         # Stack expert losses: [num_experts, batch_size]
         expert_losses_tensor = torch.stack(expert_losses)  # [num_experts, batch_size]
@@ -457,8 +505,8 @@ class CKA_MOE(CrossEntropyLossMoE):
                 aligned_teacher_h = teacher_h
                 
             # Compute CKA loss between projected student and (aligned) teacher representations
-            cka_loss = self.cka_loss(student_h.view(-1, student_h.size(-1)),
-                                    aligned_teacher_h.view(-1, aligned_teacher_h.size(-1)))
+            cka_loss = self.cka_loss(projected_student_h.view(-1, projected_student_h.size(-1)), 
+                                   aligned_teacher_h.view(-1, aligned_teacher_h.size(-1)))
             total_cka_loss += cka_loss
             num_aligned_layers += 1
             
