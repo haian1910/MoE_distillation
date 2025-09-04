@@ -16,7 +16,7 @@ DISTRIBUTED_ARGS="--nproc_per_node $GPUS_PER_NODE \
 
 # model
 BASE_PATH=/content/MoE_distillation
-CKPT_NAME="bert"
+CKPT_NAME="bert_anli_r2_2tea"
 CKPT_PATH="${BASE_PATH}/model_hub/${CKPT_NAME}"
 TEACHER_MODEL_NAME="LLM2Vec"
 TEACHER_MODEL_PATH="/content/drive/MyDrive/Colab_Notebooks/data_distillation/checkpoint_for_test/Llama_sft_anli_r2" # checkpoint LLM2Vec Mistral 7B
