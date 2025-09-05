@@ -594,14 +594,96 @@ class Distiller(nn.Module):
 
         return model, tokenizer
     def load_teacher_model(self):
-        log_rank("Loading teacher model...")
+        # log_rank("Loading teacher model...")
+        # config = AutoConfig.from_pretrained(
+        #     "McGill-NLP/LLM2Vec-Mistral-7B-Instruct-v2-mntp",
+        #     trust_remote_code=True
+        # )
+        # config.is_model_parallel = False
+
+        # tokenizer = self.load_tokenizer("McGill-NLP/LLM2Vec-Mistral-7B-Instruct-v2-mntp")
+
+        # if hasattr(config, "n_embed"):
+        #     self.teacher_hidden_size = config.n_embed
+        # else:
+        #     self.teacher_hidden_size = config.hidden_size
+
+        # config.num_labels = self.args.num_labels
+        # model = AutoModelForSequenceClassification.from_pretrained(
+        #     "McGill-NLP/LLM2Vec-Mistral-7B-Instruct-v2-mntp",
+        #     config=config,
+        #     device_map=None,
+        #     torch_dtype=self.dtype,
+        #     trust_remote_code=True,
+        # )
+        # model.config.pad_token_id = 2
+        # teacher_model = PeftModel.from_pretrained(
+        #     model,
+        #     "McGill-NLP/LLM2Vec-Mistral-7B-Instruct-v2-mntp",
+        # )    
+        
+        # teacher_model = teacher_model.merge_and_unload()  # This can take several minutes on cpu
+
+        # # Loading unsupervised SimCSE model. This loads the trained LoRA weights on top of MNTP model. Hence the final weights are -- Base model + MNTP (LoRA) + SimCSE (LoRA).
+        # teacher_model = PeftModel.from_pretrained(
+        #     teacher_model, "McGill-NLP/LLM2Vec-Mistral-7B-Instruct-v2-mntp-unsup-simcse"
+        # )
+        # teacher_model = teacher_model.merge_and_unload()
+
+        # if hasattr(self.args, 'teacher_model_path') and self.args.teacher_model_path:
+            
+        #     # Path to the adapter model weights
+        #     adapter_path = os.path.join(self.args.teacher_model_path, "adapter_model.bin")
+        #     fixed_adapter_path = adapter_path + ".fixed"
+        #     if not os.path.exists(fixed_adapter_path):
+        #         if dist.get_rank() == 0:
+        #             # Load the checkpoint and fix the keys
+        #             checkpoint = torch.load(adapter_path)            
+        #             fixed_checkpoint = {}
+                    
+        #             for key, value in checkpoint.items():
+        #                 if "lora_A.weight" in key and "default" not in key:
+        #                     key = key.replace("lora_A.weight", "lora_A.default.weight")
+        #                 if "lora_B.weight" in key and "default" not in key:
+        #                     key = key.replace("lora_B.weight", "lora_B.default.weight")
+        #                 if "base_model.model.base_model.model" in key:
+        #                     key = key.replace("base_model.model.base_model.model", "base_model.model")
+                            
+        #                 fixed_checkpoint[key] = value
+                    
+        #             # Save the fixed checkpoint back to the original file
+        #             if fixed_checkpoint: 
+        #                 torch.save(fixed_checkpoint, fixed_adapter_path)
+            
+        #     dist.barrier()  
+            
+        #     teacher_model = PeftModel.from_pretrained(
+        #         teacher_model,
+        #         self.args.teacher_model_path,
+        #         adapter_name="default",
+        #         adapter_weights_path=fixed_adapter_path
+        #     )
+
+        # classifier_path = os.path.join(self.args.teacher_model_path, "classifier_head.bin")
+        # if os.path.exists(classifier_path):
+        #     log_rank("Loading classifier head from trained model...")
+        #     classifier_state_dict = torch.load(classifier_path, map_location="cpu")
+        #     teacher_model.score.load_state_dict(classifier_state_dict)
+        # else:
+        #     log_rank("No classifier head found in teacher model path. Using default classifier.")
+        # for param in teacher_model.parameters():
+        #     param.requires_grad = False
+        
+        # return teacher_model, tokenizer
+
+        log_rank("Loading teacher model")
         config = AutoConfig.from_pretrained(
-            "McGill-NLP/LLM2Vec-Mistral-7B-Instruct-v2-mntp",
+            "Qwen/Qwen3-Embedding-0.6B",
             trust_remote_code=True
         )
         config.is_model_parallel = False
 
-        tokenizer = self.load_tokenizer("McGill-NLP/LLM2Vec-Mistral-7B-Instruct-v2-mntp")
+        tokenizer = self.load_tokenizer("Qwen/Qwen3-Embedding-0.6B")
 
         if hasattr(config, "n_embed"):
             self.teacher_hidden_size = config.n_embed
@@ -610,71 +692,45 @@ class Distiller(nn.Module):
 
         config.num_labels = self.args.num_labels
         model = AutoModelForSequenceClassification.from_pretrained(
-            "McGill-NLP/LLM2Vec-Mistral-7B-Instruct-v2-mntp",
+            "Qwen/Qwen3-Embedding-0.6B",
             config=config,
             device_map=None,
             torch_dtype=self.dtype,
             trust_remote_code=True,
         )
-        model.config.pad_token_id = 2
-        teacher_model = PeftModel.from_pretrained(
-            model,
-            "McGill-NLP/LLM2Vec-Mistral-7B-Instruct-v2-mntp",
-        )    
         
-        teacher_model = teacher_model.merge_and_unload()  # This can take several minutes on cpu
+        # Set pad token ID if needed
+        if model.config.pad_token_id is None:
+            model.config.pad_token_id = tokenizer.pad_token_id
+        
+        # Check if we should load pre-trained weights before fine-tuning
+        if hasattr(self.args, 'pretrained_model_path') and self.args.pretrained_model_path:
+            # Try to load the full model weights
+            model_path = os.path.join(self.args.pretrained_model_path, "pytorch_model.bin")
+            if os.path.exists(model_path):
+                log_rank("Loading pretrained weights before fine-tuning...")
+                model_state_dict = torch.load(model_path, map_location="cpu")
+                model.load_state_dict(model_state_dict, strict=False)
 
-        # Loading unsupervised SimCSE model. This loads the trained LoRA weights on top of MNTP model. Hence the final weights are -- Base model + MNTP (LoRA) + SimCSE (LoRA).
-        teacher_model = PeftModel.from_pretrained(
-            teacher_model, "McGill-NLP/LLM2Vec-Mistral-7B-Instruct-v2-mntp-unsup-simcse"
-        )
-        teacher_model = teacher_model.merge_and_unload()
-
-        if hasattr(self.args, 'teacher_model_path') and self.args.teacher_model_path:
-            
-            # Path to the adapter model weights
-            adapter_path = os.path.join(self.args.teacher_model_path, "adapter_model.bin")
-            fixed_adapter_path = adapter_path + ".fixed"
-            if not os.path.exists(fixed_adapter_path):
-                if dist.get_rank() == 0:
-                    # Load the checkpoint and fix the keys
-                    checkpoint = torch.load(adapter_path)            
-                    fixed_checkpoint = {}
-                    
-                    for key, value in checkpoint.items():
-                        if "lora_A.weight" in key and "default" not in key:
-                            key = key.replace("lora_A.weight", "lora_A.default.weight")
-                        if "lora_B.weight" in key and "default" not in key:
-                            key = key.replace("lora_B.weight", "lora_B.default.weight")
-                        if "base_model.model.base_model.model" in key:
-                            key = key.replace("base_model.model.base_model.model", "base_model.model")
-                            
-                        fixed_checkpoint[key] = value
-                    
-                    # Save the fixed checkpoint back to the original file
-                    if fixed_checkpoint: 
-                        torch.save(fixed_checkpoint, fixed_adapter_path)
-            
-            dist.barrier()  
-            
-            teacher_model = PeftModel.from_pretrained(
-                teacher_model,
-                self.args.teacher_model_path,
-                adapter_name="default",
-                adapter_weights_path=fixed_adapter_path
-            )
-
-        classifier_path = os.path.join(self.args.teacher_model_path, "classifier_head.bin")
-        if os.path.exists(classifier_path):
-            log_rank("Loading classifier head from trained model...")
-            classifier_state_dict = torch.load(classifier_path, map_location="cpu")
-            teacher_model.score.load_state_dict(classifier_state_dict)
-        else:
-            log_rank("No classifier head found in teacher model path. Using default classifier.")
-        for param in teacher_model.parameters():
+            # Try to load classifier head if available
+            classifier_path = os.path.join(self.args.pretrained_model_path, "classifier_head.bin")
+            if os.path.exists(classifier_path):
+                log_rank("Loading classifier head...")
+                classifier_state_dict = torch.load(classifier_path, map_location="cpu")
+                # Check if the model has a score attribute or classifier attribute
+                if hasattr(model, "score"):
+                    model.score.load_state_dict(classifier_state_dict)
+                elif hasattr(model, "classifier"):
+                    model.classifier.load_state_dict(classifier_state_dict)
+                else:
+                    log_rank("Warning: Model does not have a recognized classifier attribute. Classifier head not loaded.")
+        
+        # Make all parameters trainable for full fine-tuning
+        for param in model.parameters():
             param.requires_grad = False
         
-        return teacher_model, tokenizer
+        return model, tokenizer
+        
 
     def load_teacher_model_2(self):
         # log_rank("Loading teacher model")
