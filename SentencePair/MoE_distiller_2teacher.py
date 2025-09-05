@@ -39,7 +39,7 @@ class ExpertNetwork(nn.Module):
 
 class GatingNetwork(nn.Module):
     """Gating network to compute expert weights"""
-    def __init__(self, input_dim, num_experts, hidden_dim=128):
+    def __init__(self, input_dim, num_experts, hidden_dim=1024):
         super(GatingNetwork, self).__init__()
         self.gate = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
@@ -56,7 +56,7 @@ class GatingNetwork(nn.Module):
 
 class MoELayer(nn.Module):
     """Mixture of Experts layer with heterogeneous expert architectures"""
-    def __init__(self, input_dim, teacher1_dim=4096, teacher2_dim=1024, num_experts=6, expert_hidden_dim=128):
+    def __init__(self, input_dim, teacher1_dim=4096, teacher2_dim=1024, num_experts=6, expert_hidden_dim=1024):
         super(MoELayer, self).__init__()
         self.num_experts = num_experts
         self.input_dim = input_dim
@@ -147,7 +147,7 @@ class MoELayer(nn.Module):
 class MoEDistilledBERT(nn.Module):
     """BERT with MoE layer for knowledge distillation from two teachers"""
     def __init__(self, bert_model, teacher1_hidden_size=4096, teacher2_hidden_size=1024, 
-                 num_experts=6, expert_hidden_dim=128):
+                 num_experts=6, expert_hidden_dim=1024):
         super(MoEDistilledBERT, self).__init__()
         self.bert = bert_model
         self.bert_hidden_size = bert_model.config.hidden_size
@@ -410,7 +410,7 @@ class Distiller(nn.Module):
         # MoE specific arguments
         group.add_argument("--num-experts", type=int, default=6,
                            help='number of experts in MoE layer (must be even)')
-        group.add_argument("--expert-hidden-dim", type=int, default=128,
+        group.add_argument("--expert-hidden-dim", type=int, default=1024,
                            help='hidden dimension for expert networks')
         group.add_argument("--teacher1-hidden-dim", type=int, default=4096,
                            help='hidden dimension for teacher1 (LLM2Vec)')
@@ -582,7 +582,7 @@ class Distiller(nn.Module):
                 teacher1_hidden_size=teacher1_hidden_size,
                 teacher2_hidden_size=teacher2_hidden_size,
                 num_experts=getattr(self.args, 'num_experts', 6),
-                expert_hidden_dim=getattr(self.args, 'expert_hidden_dim', 128)
+                expert_hidden_dim=getattr(self.args, 'expert_hidden_dim', 1024)
             )
             
             log_rank(' > number of parameters: {:,}'.format(
@@ -677,14 +677,68 @@ class Distiller(nn.Module):
         return teacher_model, tokenizer
 
     def load_teacher_model_2(self):
+        # log_rank("Loading teacher model")
+        # config = AutoConfig.from_pretrained(
+        #     "Qwen/Qwen3-Embedding-0.6B",
+        #     trust_remote_code=True
+        # )
+        # config.is_model_parallel = False
+
+        # tokenizer = self.load_tokenizer("Qwen/Qwen3-Embedding-0.6B")
+
+        # if hasattr(config, "n_embed"):
+        #     self.teacher_hidden_size = config.n_embed
+        # else:
+        #     self.teacher_hidden_size = config.hidden_size
+
+        # config.num_labels = self.args.num_labels
+        # model = AutoModelForSequenceClassification.from_pretrained(
+        #     "Qwen/Qwen3-Embedding-0.6B",
+        #     config=config,
+        #     device_map=None,
+        #     torch_dtype=self.dtype,
+        #     trust_remote_code=True,
+        # )
+        
+        # # Set pad token ID if needed
+        # if model.config.pad_token_id is None:
+        #     model.config.pad_token_id = tokenizer.pad_token_id
+        
+        # # Check if we should load pre-trained weights before fine-tuning
+        # if hasattr(self.args, 'pretrained_model_path') and self.args.pretrained_model_path:
+        #     # Try to load the full model weights
+        #     model_path = os.path.join(self.args.pretrained_model_path, "pytorch_model.bin")
+        #     if os.path.exists(model_path):
+        #         log_rank("Loading pretrained weights before fine-tuning...")
+        #         model_state_dict = torch.load(model_path, map_location="cpu")
+        #         model.load_state_dict(model_state_dict, strict=False)
+
+        #     # Try to load classifier head if available
+        #     classifier_path = os.path.join(self.args.pretrained_model_path, "classifier_head.bin")
+        #     if os.path.exists(classifier_path):
+        #         log_rank("Loading classifier head...")
+        #         classifier_state_dict = torch.load(classifier_path, map_location="cpu")
+        #         # Check if the model has a score attribute or classifier attribute
+        #         if hasattr(model, "score"):
+        #             model.score.load_state_dict(classifier_state_dict)
+        #         elif hasattr(model, "classifier"):
+        #             model.classifier.load_state_dict(classifier_state_dict)
+        #         else:
+        #             log_rank("Warning: Model does not have a recognized classifier attribute. Classifier head not loaded.")
+        
+        # # Make all parameters trainable for full fine-tuning
+        # for param in model.parameters():
+        #     param.requires_grad = False
+        
+        # return model, tokenizer
         log_rank("Loading teacher model")
         config = AutoConfig.from_pretrained(
-            "Qwen/Qwen3-Embedding-0.6B",
+            "BAAI/bge-m3",
             trust_remote_code=True
         )
         config.is_model_parallel = False
 
-        tokenizer = self.load_tokenizer("Qwen/Qwen3-Embedding-0.6B")
+        tokenizer = self.load_tokenizer("BAAI/bge-m3")
 
         if hasattr(config, "n_embed"):
             self.teacher_hidden_size = config.n_embed
@@ -693,7 +747,7 @@ class Distiller(nn.Module):
 
         config.num_labels = self.args.num_labels
         model = AutoModelForSequenceClassification.from_pretrained(
-            "Qwen/Qwen3-Embedding-0.6B",
+            "BAAI/bge-m3",
             config=config,
             device_map=None,
             torch_dtype=self.dtype,
