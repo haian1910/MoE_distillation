@@ -12,12 +12,15 @@ from .cross_entropy_loss import CrossEntropyLoss
 
 def calculate_weight(logits):
     """Calculate weight factor based on logits entropy/uncertainty"""
-    probs = F.softmax(logits, dim=-1)
-    entropy = -torch.sum(probs * torch.log(probs + 1e-8), dim=-1)
-    # Normalize entropy to [0, 1] range and use as weight
-    max_entropy = torch.log(torch.tensor(logits.size(-1), dtype=torch.float))
-    weight = entropy / max_entropy
-    return weight.cpu().numpy()
+    with torch.no_grad():  # Ensure no gradients are computed
+        # Convert to float32 before operations
+        logits = logits.float()
+        probs = F.softmax(logits.detach(), dim=-1)
+        entropy = -torch.sum(probs * torch.log(probs + 1e-8), dim=-1)
+        # Normalize entropy to [0, 1] range and use as weight
+        max_entropy = torch.log(torch.tensor(logits.size(-1), dtype=torch.float, device=logits.device))
+        weight = entropy / max_entropy
+        return weight.cpu().float().numpy()
 
 
 class CDM(CrossEntropyLoss):
@@ -432,24 +435,32 @@ class CDM(CrossEntropyLoss):
 
     def dist_func(self, logits, teacher_logits, target=None, reduction=None):
         """Compute KL divergence between student and teacher logits"""
-        lprobs = torch.log_softmax(logits / self.kd_temp, -1, dtype=torch.float32)
-        teacher_probs = torch.softmax(teacher_logits, -1, dtype=torch.float32)
-        teacher_lprobs = torch.log_softmax(teacher_logits, -1, dtype=torch.float32) * (self.kd_temp ** 2)
-        
-        kld = teacher_probs * (teacher_lprobs - lprobs)
-        
-        # Handle inf values
-        inf_mask = kld.isinf()
-        kld = kld.masked_fill_(inf_mask, 0.0)
-        
-        # Compute mean over valid elements
-        kld_sum = kld.sum()
-        valid_elements = torch.sum(~inf_mask).item()
-        
-        if valid_elements > 0:
-            return kld_sum / valid_elements
-        else:
-            return torch.tensor(0.0, device=logits.device)
+        # Convert to float32 and apply temperature scaling
+        student_logits = logits.float() / self.kd_temp 
+        teacher_logits = teacher_logits.float() / self.kd_temp
+    
+        # Compute probabilities
+        student_probs = F.softmax(student_logits, dim=-1)
+        teacher_probs = F.softmax(teacher_logits, dim=-1)
+    
+        # Compute log probabilities
+        student_log_probs = F.log_softmax(student_logits, dim=-1) 
+        teacher_log_probs = F.log_softmax(teacher_logits, dim=-1)
+
+        # Standard KL divergence formula: KL(p||q) = p * (log p - log q)
+        kld = teacher_probs * (teacher_log_probs - student_log_probs)
+    
+        # Sum across the vocabulary dimension
+        kld = kld.sum(dim=-1)
+    
+        # Handle any potential numerical instabilities
+        kld = torch.clamp(kld, min=0.0)
+    
+        # Take mean across batch
+        kld = kld.mean()
+    
+        # Scale by temperature squared as per the original paper
+        return kld * (self.kd_temp ** 2)
 
     def merge_tensor(self, values, mapping_list):
         """Merge tensor values according to mapping list"""
@@ -472,14 +483,20 @@ class CDM(CrossEntropyLoss):
         if norm_func is None:
             norm_func = lambda a, b: editdistance.eval(str(a), str(b))
         
-        matrix = np.zeros((len(series_1) + 1, len(series_2) + 1))
+        # Convert factors to float32 numpy arrays
+        if torch.is_tensor(series1_factor):
+            series1_factor = series1_factor.float().cpu().numpy()
+        if torch.is_tensor(series2_factor):
+            series2_factor = series2_factor.float().cpu().numpy()
+        
+        matrix = np.zeros((len(series_1) + 1, len(series_2) + 1), dtype=np.float32)
         matrix[0, :] = np.inf
         matrix[:, 0] = np.inf
         matrix[0, 0] = 0
         
         for i, (vec1, fc1) in enumerate(zip(series_1, series1_factor)):
             for j, (vec2, fc2) in enumerate(zip(series_2, series2_factor)):
-                cost = norm_func(vec1, vec2) * fc1 * fc2
+                cost = norm_func(vec1, vec2) * float(fc1) * float(fc2)
                 matrix[i + 1, j + 1] = cost + min(
                     matrix[i, j + 1], matrix[i + 1, j], matrix[i, j]
                 )
