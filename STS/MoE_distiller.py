@@ -87,7 +87,7 @@ class STSModel(nn.Module):
         )
 
         # Get the CLS token representation (for sentence embedding)
-        pooled_output = outputs.last_hidden_state[:, 0]
+        pooled_output = outputs.last_hidden_state[:, -1]
 
         # Apply the regressor to get similarity score
         score = self.regressor(pooled_output)
@@ -767,21 +767,24 @@ class Distiller(nn.Module):
         model_files = os.listdir(self.args.teacher_model_path)
         log_rank(f"Found files in teacher model directory: {model_files}")
 
-        # normal loading
+        # Load base model configuration
         config = AutoConfig.from_pretrained(
-            "McGill-NLP/LLM2Vec-Mistral-7B-Instruct-v2-mntp",
+            "McGill-NLP/LLM2Vec-Mistral-7B-Instruct-v2-mntp",  # Changed to match adapter_config.json
             trust_remote_code=True
         )
         config.is_model_parallel = False
-        tokenizer = self.load_tokenizer("McGill-NLP/LLM2Vec-Mistral-7B-Instruct-v2-mntp")
+        
+        # Load tokenizer
+        tokenizer = self.load_tokenizer("McGill-NLP/LLM2Vec-Mistral-7B-Instruct-v2-mntp")  # Changed to match base model
 
         if hasattr(config, "n_embed"):
             self.teacher_hidden_size = config.n_embed
         else:
             self.teacher_hidden_size = config.hidden_size
 
+        # Load base model
         base_model = AutoModel.from_pretrained(
-            "McGill-NLP/LLM2Vec-Mistral-7B-Instruct-v2-mntp",
+            "McGill-NLP/LLM2Vec-Mistral-7B-Instruct-v2-mntp",  # Changed to match adapter_config.json
             config=config,
             device_map=None,
             torch_dtype=self.dtype,
@@ -790,28 +793,29 @@ class Distiller(nn.Module):
 
         if hasattr(base_model.config, "pad_token_id"):
             base_model.config.pad_token_id = 2
-
-        teacher_base_model = PeftModel.from_pretrained(
-            base_model,
-            "McGill-NLP/LLM2Vec-Mistral-7B-Instruct-v2-mntp",
-        )    
-
-        teacher_base_model = teacher_base_model.merge_and_unload()
-
-        teacher_base_model = PeftModel.from_pretrained(
-            teacher_base_model, "McGill-NLP/LLM2Vec-Mistral-7B-Instruct-v2-mntp-unsup-simcse"
-        )
-        teacher_base_model = teacher_base_model.merge_and_unload()
-
+        
         def load_peft_model_with_remapped_keys(base_model, teacher_model_path):
             config_path = os.path.join(teacher_model_path, "adapter_config.json")
             if os.path.exists(config_path):
-                from peft import PeftConfig
-                peft_config = PeftConfig.from_pretrained(teacher_model_path)
+                # Load and filter config
+                with open(config_path, 'r') as f:
+                    config_dict = json.load(f)
+                
+                # Remove unsupported parameters
+                supported_params = [
+                    'task_type', 'inference_mode', 'r', 'lora_alpha', 'lora_dropout',
+                    'target_modules', 'bias', 'modules_to_save', 'init_lora_weights',
+                    'layers_to_transform', 'layers_pattern'
+                ]
+                filtered_config = {k: v for k, v in config_dict.items() if k in supported_params}
+                
+                # Create PeftConfig with filtered parameters
+                from peft import PeftConfig, LoraConfig
+                peft_config = LoraConfig(**filtered_config)
                 peft_model = PeftModel(base_model, peft_config)
             else:
-                # If no config file, you'll need to manually create one as in the previous solution
                 raise ValueError("No adapter_config.json found and direct loading failed")
+
             adap_path = os.path.join(teacher_model_path, "adapter_model.bin")
             # Remap keys to fix nesting and naming issues
             remapped_state_dict = {}
@@ -828,12 +832,15 @@ class Distiller(nn.Module):
             print("LoRA loaded")
             return peft_model
 
+        # Load PEFT model directly from local checkpoint
         teacher_base_model = load_peft_model_with_remapped_keys(
-            teacher_base_model,
+            base_model,
             self.args.teacher_model_path
         )
 
+        # Create STS model wrapper
         teacher_model = STSModel(teacher_base_model)
+        
         # Load regressor if available
         if os.path.exists(regressor_path):
             log_rank("Loading regressor weights")
@@ -848,6 +855,7 @@ class Distiller(nn.Module):
 
         log_rank("Teacher model loaded successfully")
         return teacher_model, tokenizer
+        
     def add_optimizer_param_group(self, optimizer):
         """
         Add parameter groups to optimizer, ensuring no parameter appears in multiple groups
