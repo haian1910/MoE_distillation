@@ -17,7 +17,7 @@ import argparse
 import os
 import deepspeed
 import numpy as np
-from Classification.distiller import Distiller
+from Classification.MoE_distiller_2teacher import Distiller
 
 
 def add_model_args(parser: argparse.ArgumentParser):
