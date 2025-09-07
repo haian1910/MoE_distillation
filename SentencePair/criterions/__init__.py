@@ -43,7 +43,7 @@ criterion_list = {
     "cka_moe": CKA_MOE,
     "moo": MOO,
     "cka_moe_2tea": CKA_MOE_2TEA,
-    "cdm", CDM
+    "cdm": CDM
 }
 
 def build_criterion(args):
