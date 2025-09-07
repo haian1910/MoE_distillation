@@ -39,7 +39,6 @@ class CDM(CrossEntropyLoss):
         self.TOKENIZER_TO_SPECIAL_TOKEN = {
             transformers.models.llama.tokenization_llama.LlamaTokenizer: "<s>",
             transformers.models.bert.tokenization_bert.BertTokenizer: "[CLS]",
-            transformers.models.gpt2.tokenization_gpt2.GPT2Tokenizer: "<|endoftext|>",
         }
     
     def forward(
