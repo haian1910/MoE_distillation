@@ -35,11 +35,16 @@ class CDM(CrossEntropyLoss):
         self.kd_alpha = getattr(args, 'kd_alpha', 0.5)
         self.padding_id = -100
         
-        # Token mapping for different tokenizers
-        self.TOKENIZER_TO_SPECIAL_TOKEN = {
-            transformers.models.llama.tokenization_llama.LlamaTokenizer: "<s>",
-            transformers.models.bert.tokenization_bert.BertTokenizer: "[CLS]",
-        }
+        # Initialize as None - will be set dynamically in forward pass
+        self.TOKENIZER_TO_SPECIAL_TOKEN = None
+    
+    def _initialize_tokenizer_mapping(self, tokenizer_teacher, tokenizer_student):
+        """Initialize tokenizer mapping dynamically based on actual tokenizer types"""
+        if self.TOKENIZER_TO_SPECIAL_TOKEN is None:
+            self.TOKENIZER_TO_SPECIAL_TOKEN = {
+                type(tokenizer_teacher): "<s>", 
+                type(tokenizer_student): "[CLS]"
+            }
     
     def forward(
         self, 
@@ -55,6 +60,9 @@ class CDM(CrossEntropyLoss):
 
         tokenizer_student = distiller.student_tokenizer
         tokenizer_teacher = distiller.teacher_tokenizers
+
+        # Initialize tokenizer mapping dynamically
+        self._initialize_tokenizer_mapping(tokenizer_teacher, tokenizer_student)
 
         # Get student outputs
         outputs = model(
@@ -105,6 +113,26 @@ class CDM(CrossEntropyLoss):
         logging_output.update(log)
         
         return loss, logging_output
+
+    def get_special_token(self, tokenizer):
+        """Get special token for tokenizer using dynamic mapping"""
+        if self.TOKENIZER_TO_SPECIAL_TOKEN is None:
+            # Fallback if mapping not initialized
+            return getattr(tokenizer, 'pad_token', '_')
+            
+        tokenizer_class = type(tokenizer)
+        if tokenizer_class in self.TOKENIZER_TO_SPECIAL_TOKEN:
+            return self.TOKENIZER_TO_SPECIAL_TOKEN[tokenizer_class]
+        else:
+            # Enhanced fallback logic
+            if hasattr(tokenizer, 'cls_token') and tokenizer.cls_token:
+                return tokenizer.cls_token
+            elif hasattr(tokenizer, 'bos_token') and tokenizer.bos_token:
+                return tokenizer.bos_token
+            elif hasattr(tokenizer, 'pad_token') and tokenizer.pad_token:
+                return tokenizer.pad_token
+            else:
+                return '_'
 
     def compute_CDM_loss(
         self, outputs, teacher_outputs, input_data, output_data, distiller, log
