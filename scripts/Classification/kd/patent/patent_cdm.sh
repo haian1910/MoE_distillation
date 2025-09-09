@@ -1,5 +1,5 @@
 #! /bin/bash
-GPUS=(0 1 2 3)
+GPUS=(0)
 export CUDA_VISIBLE_DEVICES=$(IFS=,; echo "${GPUS[*]}")
 
 MASTER_ADDR=localhost
@@ -15,7 +15,7 @@ DISTRIBUTED_ARGS="--nproc_per_node $GPUS_PER_NODE \
                   --master_port $MASTER_PORT"
 
 # model
-BASE_PATH=/LLM2Vec_Distillation
+BASE_PATH=/MoE_Distillation
 CKPT_NAME="bert_patent"
 CKPT_PATH="${BASE_PATH}/model_hub/${CKPT_NAME}"
 TEACHER_MODEL_NAME="LLM2Vec"
@@ -27,7 +27,7 @@ TASK="cdm"
 # hp
 BATCH_SIZE=4
 LR=0.00001
-GRAD_ACC=2
+GRAD_ACC=1
 EVAL_BATCH_SIZE=4
 EPOCH=5
 KD_RATE=0.5
