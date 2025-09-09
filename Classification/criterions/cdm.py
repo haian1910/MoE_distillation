@@ -96,7 +96,7 @@ class CDM(CrossEntropyLoss):
         print("CDM_loss:", kd_loss)
         
         # Combine losses
-        loss = (1.0 - self.kd_rate) * loss_ce + self.kd_rate * kd_loss
+        loss = (1.0 - self.kd_rate) * loss_ce + self.kd_rate * kd_loss * 0.1
         
         # Calculate accuracy 
         log["loss"] = loss
