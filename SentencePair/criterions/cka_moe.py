@@ -51,7 +51,7 @@ class CKA_MOE(CrossEntropyLossMoE):
         self.diversity_weight = getattr(args, 'diversity_weight', 1)
 
         # Create projections for experts 1 and 2 (expert 3 doesn't need projection)
-        self.projection = LinearProjection(768, 4096)
+        self.projection = LinearProjection(768, 1024)
         
         # Dynamic top-k selection parameters
         self.temperature = getattr(args, 'temperature', 0.8)  # Temperature for softmax
