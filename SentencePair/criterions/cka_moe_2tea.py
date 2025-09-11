@@ -51,7 +51,7 @@ class CKA_MOE_2TEA(CrossEntropyLossMoE):
         self.diversity_weight = getattr(args, 'diversity_weight', 1)
 
         # Create projections for experts 1 and 2 (expert 3 doesn't need projection)
-        self.projection = LinearProjection(768, 1024)
+        self.projection = LinearProjection(768, 4096)
         self.projection2 = LinearProjection(768, 1024)  # For teacher 2 with 1024 hidden size
         
         # Dynamic top-k selection parameters
