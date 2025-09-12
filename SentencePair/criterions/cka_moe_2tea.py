@@ -152,7 +152,7 @@ class CKA_MOE_2TEA(CrossEntropyLossMoE):
         print("topk_cka_loss:", topk_cka_loss)
 
         # Final loss combination
-        loss = (1.0 - self.kd_rate) * loss + self.kd_rate * (0.8*total_moe_loss + 0.2*topk_cka_loss)
+        loss = (1.0 - self.kd_rate) * loss + self.kd_rate * (0.5*total_moe_loss + 0.5*topk_cka_loss)
         log["loss"] = loss.detach().clone()  # Store as tensor for distributed logging
 
         # Compute accuracy
