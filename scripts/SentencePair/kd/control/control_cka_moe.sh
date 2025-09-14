@@ -15,14 +15,14 @@ DISTRIBUTED_ARGS="--nproc_per_node $GPUS_PER_NODE \
                   --master_port $MASTER_PORT"
 
 # model
-BASE_PATH=/mnt/bn/magellan-product-audit/tu.vu/matrixone/Dynamic_mapping_Distillation
+BASE_PATH=/workspace/MoE_distillation
 CKPT_NAME="bert"
 CKPT_PATH="${BASE_PATH}/model_hub/${CKPT_NAME}"
 TEACHER_MODEL_NAME="LLM2Vec"
-TEACHER_MODEL_PATH="/mnt/bn/magellan-product-audit/tu.vu/matrixone/LLM2Vec_Distillation/outputs/LLM2Vec/sft/control/criterion=cross_entropy__lora-rank=256-alpha=16-dropout=0.1-bf16__epoch=3__bsz=4x1x1=4__lr=0.00001/epoch3_step5040_loss0.3079"
+TEACHER_MODEL_PATH="/workspace/MoE_distillation/outputs/LLM2Vec_control/sft/criterion=cross_entropy__lora-rank=256-alpha=16-dropout=0.1-bf16__epoch=7__bsz=4x1x1=4__lr=0.00001/epoch5_step8400_loss0.9570"
 # data
 DATASET=control
-DATA_DIR="${BASE_PATH}/data/${DATASET}"
+DATA_DIR="/workspace/MoE_distillation/data/control"
 NUM_LABELS=3
 # task
 TASK="cka_moe"
