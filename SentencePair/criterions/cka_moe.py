@@ -49,12 +49,15 @@ class CKA_MOE(CrossEntropyLossMoE):
         
         # Parameters for expert diversity loss
         self.diversity_weight = getattr(args, 'diversity_weight', 1)
+        
+        # Parameter for L_min regularization
+        self.min_gate_threshold = getattr(args, 'min_gate_threshold', 0.25)
 
         # Create projections for experts 1 and 2 (expert 3 doesn't need projection)
-        self.projection = LinearProjection(768, 1024)
+        self.projection = LinearProjection(768, 4096)
         
         # Dynamic top-k selection parameters
-        self.temperature = getattr(args, 'temperature', 0.8)  # Temperature for softmax
+        self.temperature = getattr(args, 'temperature', 1.0)  # Temperature for softmax
         self.probability_mass_threshold = getattr(args, 'probability_mass_threshold', 0.95)  # t in the algorithm
         self.k_min = getattr(args, 'k_min', 1)  # Minimum number of tokens to select
         self.k_max = getattr(args, 'k_max', 3)  # Maximum number of tokens to select
@@ -139,7 +142,7 @@ class CKA_MOE(CrossEntropyLossMoE):
         print("topk_cka_loss:", topk_cka_loss)
 
         # Final loss combination
-        loss = (1.0 - self.kd_rate) * loss + self.kd_rate * (total_moe_loss + topk_cka_loss)
+        loss = (1.0 - self.kd_rate) * loss + self.kd_rate * (0.7*total_moe_loss + 0.3*topk_cka_loss)
         log["loss"] = loss.detach().clone()  # Store as tensor for distributed logging
 
         # Compute accuracy
@@ -233,7 +236,19 @@ class CKA_MOE(CrossEntropyLossMoE):
         # Take mean across batch to get final scalar loss
         moe_loss = weighted_losses.mean()  # scalar
         
+        # Compute L_min regularization
+        # L_min = (1/N) * sum_{t=1}^N sum_{i=1}^S [max(0, l - pi_t,i)]^2
+        # where l is min_gate_threshold, pi_t,i is gating weight for expert i in sample t
+        l_min_loss = torch.mean(torch.sum(
+            torch.pow(torch.relu(0.25 - gating_weights), 2),
+            dim=1
+        ))
+        print("L_min_loss:", l_min_loss.detach().clone())
+        # Add L_min regularization to moe_loss
+        moe_loss = moe_loss + l_min_loss
+        
         log["moe_loss"] = moe_loss.detach().clone()
+        log["l_min_loss"] = l_min_loss.detach().clone()
         log["gating_weights_mean"] = gating_weights.mean(dim=0).detach().clone()  # Average gating weights as tensor
         
         return moe_loss, log
@@ -457,8 +472,8 @@ class CKA_MOE(CrossEntropyLossMoE):
                 aligned_teacher_h = teacher_h
                 
             # Compute CKA loss between projected student and (aligned) teacher representations
-            cka_loss = self.cka_loss(student_h.view(-1, student_h.size(-1)),
-                                    aligned_teacher_h.view(-1, aligned_teacher_h.size(-1)))
+            cka_loss = self.cka_loss(projected_student_h.view(-1, projected_student_h.size(-1)), 
+                                   aligned_teacher_h.view(-1, aligned_teacher_h.size(-1)))
             total_cka_loss += cka_loss
             num_aligned_layers += 1
             
