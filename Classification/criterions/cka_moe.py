@@ -245,7 +245,7 @@ class CKA_MOE(CrossEntropyLossMoE):
         ))
         print("L_min_loss:", l_min_loss.detach().clone())
         # Add L_min regularization to moe_loss
-        moe_loss = moe_loss + l_min_loss
+        moe_loss = moe_loss + 5*l_min_loss
         
         log["moe_loss"] = moe_loss.detach().clone()
         log["l_min_loss"] = l_min_loss.detach().clone()
