@@ -225,6 +225,8 @@ class CKA_MOE(CrossEntropyLossMoE):
         log["expert3_pairwise_relation_loss"] = pairwise_relation_loss_per_sample.mean().detach().clone()
         print("expert3_pairwise_relation_loss:", pairwise_relation_loss_per_sample.mean().detach().clone())
 
+        
+
         # Stack expert losses: [num_experts, batch_size]
         expert_losses_tensor = torch.stack(expert_losses)  # [num_experts, batch_size]
         
@@ -300,7 +302,7 @@ class CKA_MOE(CrossEntropyLossMoE):
             
             per_sample_losses.append(sample_loss)
         
-        return torch.stack(per_sample_losses)  # [batch_size]
+        return torch.stack(per_sample_losses) * 10 # [batch_size]
 
     def compute_expert_diversity_loss(self, expert_outputs):
         """
@@ -387,7 +389,7 @@ class CKA_MOE(CrossEntropyLossMoE):
         log_sum_exp = torch.logsumexp(similarity_matrix, dim=1)  # [batch_size]
         infonce_loss_per_sample = log_sum_exp - positive_similarities  # [batch_size]
         
-        return infonce_loss_per_sample
+        return infonce_loss_per_sample / 3
 
     # Keep original methods for backward compatibility
     def compute_cosine_loss(self, student_output, teacher_output):
