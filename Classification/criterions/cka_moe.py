@@ -242,12 +242,12 @@ class CKA_MOE(CrossEntropyLossMoE):
         # L_min = (1/N) * sum_{t=1}^N sum_{i=1}^S [max(0, l - pi_t,i)]^2
         # where l is min_gate_threshold, pi_t,i is gating weight for expert i in sample t
         l_min_loss = torch.mean(torch.sum(
-            torch.pow(torch.relu(0.25 - gating_weights), 2),
+            torch.pow(torch.relu(0.1 - gating_weights), 2),
             dim=1
         ))
         print("L_min_loss:", l_min_loss.detach().clone())
         # Add L_min regularization to moe_loss
-        moe_loss = moe_loss + 15*l_min_loss
+        moe_loss = moe_loss + l_min_loss
         
         log["moe_loss"] = moe_loss.detach().clone()
         log["l_min_loss"] = l_min_loss.detach().clone()
