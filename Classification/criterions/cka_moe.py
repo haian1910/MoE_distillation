@@ -142,7 +142,7 @@ class CKA_MOE(CrossEntropyLossMoE):
         print("topk_cka_loss:", topk_cka_loss)
 
         # Final loss combination
-        loss = (1.0 - self.kd_rate) * loss + self.kd_rate * (0.7*total_moe_loss + 0.3*topk_cka_loss)
+        loss = (1.0 - self.kd_rate) * loss + self.kd_rate * (0.1*total_moe_loss + 0.9*topk_cka_loss)
         log["loss"] = loss.detach().clone()  # Store as tensor for distributed logging
 
         # Compute accuracy
@@ -302,7 +302,7 @@ class CKA_MOE(CrossEntropyLossMoE):
             
             per_sample_losses.append(sample_loss)
         
-        return torch.stack(per_sample_losses) * 10 # [batch_size]
+        return torch.stack(per_sample_losses) # [batch_size]
 
     def compute_expert_diversity_loss(self, expert_outputs):
         """
@@ -389,7 +389,7 @@ class CKA_MOE(CrossEntropyLossMoE):
         log_sum_exp = torch.logsumexp(similarity_matrix, dim=1)  # [batch_size]
         infonce_loss_per_sample = log_sum_exp - positive_similarities  # [batch_size]
         
-        return infonce_loss_per_sample / 3
+        return infonce_loss_per_sample 
 
     # Keep original methods for backward compatibility
     def compute_cosine_loss(self, student_output, teacher_output):
